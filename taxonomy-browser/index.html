@@ -83,6 +83,7 @@
   .ai-status.ready { background: rgba(123,216,143,.15); color: var(--accent-2); }
   .ai-status.off { background: rgba(255,122,122,.12); color: var(--err); }
   .ai-status.checking { background: rgba(255,207,107,.15); color: var(--warn); }
+  .ai-model { background: #0d121d; color: var(--ink); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font: inherit; max-width: 220px; }
 </style>
 </head>
 <body>
@@ -132,8 +133,9 @@
       </div>
 
       <div class="ai-bar" id="aiBar">
-        <button type="button" class="ai" id="aiFillBtn" title="Draft the fields for this term with Grok (xAI)">✨ Fill with AI</button>
-        <span class="ai-text">Drafts the <strong>definition</strong>, <strong>scope note</strong> and <strong>aliases</strong> from the term name using Grok&nbsp;(xAI). Always review — you own every word.</span>
+        <button type="button" class="ai" id="aiFillBtn" title="Draft the fields for this term with the selected model">✨ Fill with AI</button>
+        <select id="aiModel" class="ai-model" title="Choose which model drafts the fields"><option value="">Loading models…</option></select>
+        <span class="ai-text">Drafts the <strong>definition</strong>, <strong>scope note</strong> and <strong>aliases</strong> from the term name. Always review — you own every word.</span>
         <span class="ai-status checking" id="aiStatus">Checking…</span>
       </div>
 
@@ -704,8 +706,50 @@ function generate() {
 // panel/border/chip tokens). No foreign gradients. The button drafts fields
 // from the term name; the human always reviews and edits before generating a PR.
 const AI = (function () {
-  const MODEL = "x-ai/grok-4-1-fast";
+  // Fallback candidates tried (in order) if the live model list can't be
+  // fetched. Kept small and Grok-first to match the tool's intent.
+  const FALLBACK_MODELS = ["x-ai/grok-4-fast", "x-ai/grok-beta", "gpt-4o-mini"];
   let available = false;
+  let models = [];           // live list of slugs, once loaded
+  let selectedModel = null;  // currently chosen slug
+
+  function currentModel() {
+    const sel = document.getElementById("aiModel");
+    return (sel && sel.value) || selectedModel || FALLBACK_MODELS[0];
+  }
+
+  // Flatten the various shapes Puter may return into a flat array of slugs.
+  function normalize(data) {
+    let out = [];
+    const push = v => { if (typeof v === "string") out.push(v); else if (v && v.id) out.push(v.id); else if (v && v.name) out.push(v.name); };
+    if (Array.isArray(data)) data.forEach(push);
+    else if (data && Array.isArray(data.models)) data.models.forEach(push);
+    else if (data && data.models && typeof data.models === "object") Object.values(data.models).forEach(l => Array.isArray(l) ? l.forEach(push) : push(l));
+    else if (data && typeof data === "object") Object.values(data).forEach(v => Array.isArray(v) ? v.forEach(push) : push(v));
+    return [...new Set(out.filter(Boolean))];
+  }
+
+  async function fetchModels() {
+    if (typeof puter !== "undefined" && puter.ai && typeof puter.ai.listModels === "function") {
+      try { const m = await puter.ai.listModels(); const n = normalize(m); if (n.length) return n; } catch (e) {}
+    }
+    for (const url of ["https://api.puter.com/puterai/chat/models", "https://api.puter.com/puterai/chat/models/"]) {
+      try { const r = await fetch(url, { headers: { "Content-Type": "application/json" } }); if (r.ok) { const n = normalize(await r.json()); if (n.length) return n; } } catch (e) {}
+    }
+    return [];
+  }
+
+  function populateSelect(list) {
+    const sel = document.getElementById("aiModel");
+    if (!sel) return;
+    sel.innerHTML = "";
+    list.forEach(m => { const o = document.createElement("option"); o.value = m; o.textContent = m; sel.appendChild(o); });
+    // Default to a Grok model when present, else the first entry.
+    const grok = list.find(m => /grok/i.test(m));
+    sel.value = grok || list[0];
+    selectedModel = sel.value;
+    sel.addEventListener("change", () => { selectedModel = sel.value; check(); });
+  }
 
   // The last AI-drafted definition, used to measure how much survived editing.
   // null => the current definition did not originate from AI (manual/existing).
@@ -738,7 +782,7 @@ Return ONLY a JSON object with keys: definition, scopeNote, aliases. No markdown
         await new Promise(r => setTimeout(r, 600));
         if (typeof puter === "undefined") throw new Error("Puter SDK not loaded");
       }
-      await puter.ai.chat("ping", { model: MODEL });
+      await puter.ai.chat("ping", { model: currentModel() });
       available = true;
       setStatus("ready", "✓ Grok ready");
     } catch (e) {
@@ -767,7 +811,7 @@ Return ONLY a JSON object with keys: definition, scopeNote, aliases. No markdown
     const original = btn.textContent;
     btn.disabled = true; btn.textContent = "⏳ Drafting…";
     try {
-      const res = await puter.ai.chat(PROMPT(term), { model: MODEL });
+      const res = await puter.ai.chat(PROMPT(term), { model: currentModel() });
       const content = res && res.message ? res.message.content : res;
       const obj = parseJson(content);
 
@@ -830,9 +874,13 @@ Return ONLY a JSON object with keys: definition, scopeNote, aliases. No markdown
   // Called by prefill(): loading an existing term is NOT AI-authored content.
   function resetBaseline() { aiDraftDefinition = null; }
 
-  function init() {
+  async function init() {
     const btn = document.getElementById("aiFillBtn");
     if (btn) btn.addEventListener("click", fill);
+    setStatus("checking", "Loading models…");
+    models = await fetchModels();
+    if (!models.length) models = FALLBACK_MODELS.slice();
+    populateSelect(models);
     check();
   }
 
