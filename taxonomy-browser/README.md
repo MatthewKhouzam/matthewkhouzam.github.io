@@ -5,6 +5,34 @@ A single, self-contained `index.html` — no build, no server, no backend.
 - **Browse** existing AAIF taxonomy terms with search + filters.
 - **Propose / edit** a term, then **download a `create-pr.sh`** script that
   makes the branch, surgical commit, push, and PR for you.
+- **Fill with AI** — draft the definition, scope note, and aliases for a term
+  using Grok (xAI). Always review before submitting.
+
+## AI assist (Grok / xAI)
+
+The Propose form has a **✨ Fill with AI** button. It drafts the definition
+(one sentence, vendor-neutral), an optional scope note, and aliases from the
+term name, using Grok via the key-less [Puter](https://puter.com) SDK — no
+backend and no API key. The UI strictly follows the browser's own design
+tokens (accent-blue button, panel/border/chip colors); it does **not** import
+any foreign styling.
+
+Provenance is tracked and recorded: the wizard measures how much of the final
+definition survived from the AI draft (character-level) versus what you edited
+by hand, and writes that ratio into the commit message and PR body, e.g.:
+
+```
+Define taxonomy term: Skill
+
+Definition authorship: 72% AI-drafted (Grok/xAI), 28% manually edited.
+```
+
+A definition typed entirely by hand is reported as `100% human-written`; an
+unedited AI draft as `100% AI-drafted … unedited`.
+
+If the definition is **100% AI-drafted and unedited**, the wizard asks you to
+confirm you have reviewed it (accuracy, vendor-neutrality) before it will
+generate the PR script — no unreviewed AI text ships silently.
 
 ## Data source (no CORS)
 

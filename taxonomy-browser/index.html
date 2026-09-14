@@ -72,6 +72,17 @@
   code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .sentenceWarn { color: var(--warn); font-size: 12px; display: none; }
   .hidden { display: none !important; }
+  /* AI assist — conforms to the taxonomy palette (accent blue, no foreign gradients) */
+  .ai-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; padding: 12px 14px; background: #0d121d; border: 1px solid var(--border); border-radius: 10px; }
+  .ai-bar .ai-text { flex: 1; min-width: 180px; color: var(--muted); font-size: 13px; }
+  .ai-bar .ai-text strong { color: var(--ink); font-weight: 600; }
+  button.ai { background: var(--chip); color: var(--ink); border: 1px solid var(--accent); border-radius: 8px; padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  button.ai:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.ai:disabled { opacity: .5; cursor: not-allowed; }
+  .ai-status { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: var(--chip); color: var(--muted); }
+  .ai-status.ready { background: rgba(123,216,143,.15); color: var(--accent-2); }
+  .ai-status.off { background: rgba(255,122,122,.12); color: var(--err); }
+  .ai-status.checking { background: rgba(255,207,107,.15); color: var(--warn); }
 </style>
 </head>
 <body>
@@ -118,6 +129,12 @@
           <input id="term" type="text" autocomplete="off" placeholder="e.g. Skill" style="width:100%;" />
           <div class="suggest" id="termSuggest"></div>
         </div>
+      </div>
+
+      <div class="ai-bar" id="aiBar">
+        <button type="button" class="ai" id="aiFillBtn" title="Draft the fields for this term with Grok (xAI)">✨ Fill with AI</button>
+        <span class="ai-text">Drafts the <strong>definition</strong>, <strong>scope note</strong> and <strong>aliases</strong> from the term name using Grok&nbsp;(xAI). Always review — you own every word.</span>
+        <span class="ai-status checking" id="aiStatus">Checking…</span>
       </div>
 
       <div class="row">
@@ -190,6 +207,8 @@
   assignment in a sandboxed scope. Use the RAW url, not github.com/.../blob/...
   (which returns an HTML page). Pin to a commit SHA for a frozen snapshot.
 -->
+<!-- Puter SDK: free, key-less access to Grok (xAI). No backend, no API key. -->
+<script src="https://js.puter.com/v2/"></script>
 <script>
 const DATA_URL = "https://raw.githubusercontent.com/aaif/ws-taxonomy-landscape/main/taxonomy/taxonomy-data.js";
 const REPO = "aaif/ws-taxonomy-landscape";
@@ -291,6 +310,9 @@ function init(data) {
   wireTermField();
   document.getElementById("definition").addEventListener("input", checkSentences);
   document.getElementById("genBtn").addEventListener("click", generate);
+
+  // AI assist (Grok / xAI via Puter)
+  AI.init();
 }
 
 // ---------- tabs ----------
@@ -454,6 +476,7 @@ function prefill(t) {
   fillTags("contrastsWith", t.contrastsWith || []);
   const set = new Set(t.workgroups || []);
   document.querySelectorAll("#wgList input").forEach(cb => cb.checked = set.has(cb.value));
+  if (typeof AI !== "undefined") AI.resetBaseline();
   checkSentences();
 }
 function fillTags(name, values) {
@@ -509,12 +532,26 @@ function shEscHeredoc(s) {
   return s;
 }
 
-function buildScript(p, exists) {
+function buildScript(p, exists, attribution) {
   const branch = "taxonomy/define-" + slug(p.term);
   const entry = jsEntry(p);
   const action = exists ? "update" : "add";
   const subject = (exists ? "Update" : "Define") + " taxonomy term: " + p.term;
   const DELIM = "TAXONOMY_ENTRY_EOF";
+
+  // Attribution line: how much of the definition was AI-drafted ("vibed") vs
+  // human-authored/edited. Recorded in the commit body and PR for provenance.
+  const attr = attribution || { origin: "manual", aiPct: 0, editedPct: 100 };
+  let provenance;
+  if (attr.origin === "manual") {
+    provenance = "Definition authorship: 100% human-written (no AI draft used).";
+  } else if (attr.origin === "ai") {
+    provenance = "Definition authorship: 100% AI-drafted (Grok/xAI), 0% manually edited — unedited.";
+  } else {
+    provenance = "Definition authorship: " + attr.aiPct + "% AI-drafted (Grok/xAI), " +
+      attr.editedPct + "% manually edited.";
+  }
+  const commitBody = provenance;
 
   // Python helper does the surgical, comment-preserving edit. It's embedded so
   // the downloaded script is fully self-contained (no repo tooling required).
@@ -588,12 +625,14 @@ ${DELIM}_PY
 
 # --- commit ------------------------------------------------------------------
 git add "$FILE"
-git commit -s -m "${subject}"
+git commit -s -m "${subject}" -m "${commitBody}"
 
 # --- push & PR ---------------------------------------------------------------
 git push -u origin "$BRANCH"
 
-PR_BODY="Proposed via the Taxonomy Term Wizard (${action}). Touches only ${DATA_FILE}."
+PR_BODY="Proposed via the Taxonomy Term Wizard (${action}). Touches only ${DATA_FILE}.
+
+${commitBody}"
 if command -v gh >/dev/null; then
   gh pr create --repo "$REPO" --base "$BASE" --head "$BRANCH" \\
     --title "${subject}" --body "$PR_BODY"
@@ -612,12 +651,38 @@ function generate() {
   const p = collectPayload();
   if (!p.term) { banner("err", "Term is required."); return; }
   const exists = !!STATE.byName[p.term.toLowerCase()];
-  const script = buildScript(p, exists);
+  const attribution = (typeof AI !== "undefined") ? AI.attribution(p.definition) : null;
+
+  // Guard: a 100% AI-drafted, unedited definition must not ship unreviewed.
+  // Ask the human to confirm they have reviewed it before generating the PR.
+  if (attribution && attribution.origin === "ai" && !generate._aiConfirmed) {
+    const ok = window.confirm(
+      "This definition is 100% AI-drafted (Grok/xAI) and has not been edited.\n\n" +
+      "You are the author of record. Have you reviewed it and do you confirm it is " +
+      "accurate and vendor-neutral?\n\nClick OK to confirm and generate the PR, or Cancel to edit it first."
+    );
+    if (!ok) {
+      banner("warn", "Review the AI-drafted definition and edit as needed, then generate again.");
+      document.getElementById("definition").focus();
+      return;
+    }
+    generate._aiConfirmed = true;
+  } else if (!attribution || attribution.origin !== "ai") {
+    // Reset the confirmation latch once the definition is no longer a pure AI draft.
+    generate._aiConfirmed = false;
+  }
+
+  const script = buildScript(p, exists, attribution);
   const branch = "taxonomy/define-" + slug(p.term);
+
+  let attrText = "";
+  if (attribution && attribution.origin === "ai") attrText = " • Definition: 100% AI-drafted (unedited)";
+  else if (attribution && attribution.origin === "ai-edited") attrText = ` • Definition: ${attribution.aiPct}% AI / ${attribution.editedPct}% edited`;
+  else attrText = " • Definition: 100% human-written";
 
   document.getElementById("resultCard").style.display = "block";
   document.getElementById("resultMeta").textContent =
-    `Action: ${exists ? "update existing" : "add new"} • Branch: ${branch} • Only ${DATA_FILE} is touched.`;
+    `Action: ${exists ? "update existing" : "add new"} • Branch: ${branch} • Only ${DATA_FILE} is touched.${attrText}`;
   document.getElementById("runCmd").textContent = "bash create-pr.sh";
   document.getElementById("scriptPreview").textContent = script;
 
@@ -633,6 +698,146 @@ function generate() {
   banner("ok", `Script generated for "${esc(p.term)}". Download it and run <code>bash create-pr.sh</code> from the repo root.`);
   document.getElementById("resultCard").scrollIntoView({ behavior: "smooth" });
 }
+
+// ---------- AI assist: Grok (xAI) via the Puter SDK ----------
+// Design note: this UI strictly follows the taxonomy palette (accent blue,
+// panel/border/chip tokens). No foreign gradients. The button drafts fields
+// from the term name; the human always reviews and edits before generating a PR.
+const AI = (function () {
+  const MODEL = "x-ai/grok-4-1-fast";
+  let available = false;
+
+  // The last AI-drafted definition, used to measure how much survived editing.
+  // null => the current definition did not originate from AI (manual/existing).
+  let aiDraftDefinition = null;
+
+  const PROMPT = (term) => `You are a careful terminology editor for the AAIF (Agentic AI Foundation) taxonomy.
+Given a single term, produce a vendor-neutral, standards-style entry.
+
+Term: ${JSON.stringify(term)}
+
+Rules:
+- "definition": exactly ONE sentence, concise and vendor-neutral. No trailing examples.
+- "scopeNote": optional clarifying context, examples or boundaries (may be empty string).
+- "aliases": array of common synonyms or alternate spellings (may be empty).
+- Do NOT invent related or contrasting terms.
+
+Return ONLY a JSON object with keys: definition, scopeNote, aliases. No markdown, no commentary.`;
+
+  function setStatus(cls, text) {
+    const el = document.getElementById("aiStatus");
+    if (!el) return;
+    el.className = "ai-status " + cls;
+    el.textContent = text;
+  }
+
+  async function check() {
+    setStatus("checking", "Checking…");
+    try {
+      if (typeof puter === "undefined") {
+        await new Promise(r => setTimeout(r, 600));
+        if (typeof puter === "undefined") throw new Error("Puter SDK not loaded");
+      }
+      await puter.ai.chat("ping", { model: MODEL });
+      available = true;
+      setStatus("ready", "✓ Grok ready");
+    } catch (e) {
+      available = false;
+      setStatus("off", "✗ Unavailable");
+      const btn = document.getElementById("aiFillBtn");
+      if (btn) btn.disabled = true;
+    }
+  }
+
+  function parseJson(raw) {
+    let s = String(raw || "").trim();
+    // Strip ```json fences if the model added them.
+    s = s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    const first = s.indexOf("{"), last = s.lastIndexOf("}");
+    if (first >= 0 && last > first) s = s.slice(first, last + 1);
+    return JSON.parse(s);
+  }
+
+  async function fill() {
+    const btn = document.getElementById("aiFillBtn");
+    const term = document.getElementById("term").value.trim();
+    if (!term) { banner("err", "Enter a term first, then let AI draft the fields."); return; }
+    if (!available) { banner("err", "Grok (xAI) is not available right now."); return; }
+
+    const original = btn.textContent;
+    btn.disabled = true; btn.textContent = "⏳ Drafting…";
+    try {
+      const res = await puter.ai.chat(PROMPT(term), { model: MODEL });
+      const content = res && res.message ? res.message.content : res;
+      const obj = parseJson(content);
+
+      const def = String(obj.definition || "").trim();
+      document.getElementById("definition").value = def;
+      document.getElementById("scopeNote").value = String(obj.scopeNote || "").trim();
+      const aliases = Array.isArray(obj.aliases) ? obj.aliases : [];
+      fillTags("aliases", aliases.map(a => String(a).trim()).filter(Boolean));
+
+      // Record the AI baseline so we can report the vibed/manual ratio later.
+      aiDraftDefinition = def;
+
+      checkSentences();
+      updateTermBadge();
+      banner("ok", `Grok drafted a definition for "${esc(term)}". <b>Review and edit</b> before generating the PR.`);
+    } catch (e) {
+      banner("err", "AI draft failed" + (e && e.message ? ` (${esc(e.message)})` : "") + ". Try again or fill the fields manually.");
+    } finally {
+      btn.disabled = false; btn.textContent = original;
+    }
+  }
+
+  // Levenshtein distance for character-level edit measurement.
+  function levenshtein(a, b) {
+    a = a || ""; b = b || "";
+    if (a === b) return 0;
+    if (!a.length) return b.length;
+    if (!b.length) return a.length;
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    let cur = new Array(b.length + 1);
+    for (let i = 1; i <= a.length; i++) {
+      cur[0] = i;
+      for (let j = 1; j <= b.length; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      }
+      [prev, cur] = [cur, prev];
+    }
+    return prev[b.length];
+  }
+
+  // Returns { origin, aiPct, editedPct } describing the final definition.
+  //   origin: "ai" | "ai-edited" | "manual"
+  //   aiPct:  % of the final definition preserved from the AI draft
+  function attribution(finalDef) {
+    finalDef = (finalDef || "").trim();
+    if (aiDraftDefinition == null || !aiDraftDefinition.trim()) {
+      return { origin: "manual", aiPct: 0, editedPct: 100 };
+    }
+    if (!finalDef) return { origin: "manual", aiPct: 0, editedPct: 100 };
+    const draft = aiDraftDefinition.trim();
+    if (finalDef === draft) return { origin: "ai", aiPct: 100, editedPct: 0 };
+    const dist = levenshtein(draft, finalDef);
+    const denom = Math.max(draft.length, finalDef.length) || 1;
+    const editedPct = Math.min(100, Math.round((dist / denom) * 100));
+    const aiPct = Math.max(0, 100 - editedPct);
+    return { origin: "ai-edited", aiPct, editedPct };
+  }
+
+  // Called by prefill(): loading an existing term is NOT AI-authored content.
+  function resetBaseline() { aiDraftDefinition = null; }
+
+  function init() {
+    const btn = document.getElementById("aiFillBtn");
+    if (btn) btn.addEventListener("click", fill);
+    check();
+  }
+
+  return { init, attribution, resetBaseline, get available() { return available; } };
+})();
 
 boot();
 </script>
