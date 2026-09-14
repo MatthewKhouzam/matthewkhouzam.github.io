@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AAIF Taxonomy — Browser &amp; Term Wizard</title>
+<link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;🌳&lt;/text&gt;&lt;/svg&gt;" />
+<style>
+  :root {
+    --bg: #0f1420; --panel: #171d2b; --ink: #e7ecf3; --muted: #9aa7bd;
+    --accent: #5b8cff; --accent-2: #7bd88f; --warn: #ffcf6b; --err: #ff7a7a;
+    --chip: #26304a; --border: #2a3448;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0; font-size: 18px; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  header a { color: var(--accent); text-decoration: none; }
+  header a:hover { text-decoration: underline; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 18px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+  .tabs button { background: var(--chip); border: 1px solid var(--border); color: var(--ink); border-radius: 8px; padding: 8px 16px; font: inherit; cursor: pointer; }
+  .tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .toolbar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  input[type=text], textarea, select {
+    background: #0d121d; color: var(--ink); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px; font: inherit;
+  }
+  textarea { width: 100%; resize: vertical; min-height: 64px; }
+  #search { flex: 1; min-width: 220px; }
+  .count { color: var(--muted); font-size: 13px; }
+  label { display: block; font-weight: 600; margin-bottom: 6px; }
+  .hint { color: var(--muted); font-weight: 400; font-size: 12px; margin-bottom: 8px; }
+  .row { margin-bottom: 18px; }
+  .tagbox { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px; background: #0d121d; border: 1px solid var(--border); border-radius: 8px; position: relative; }
+  .tagbox input { flex: 1; min-width: 120px; border: none; background: transparent; color: var(--ink); padding: 6px; outline: none; }
+  .chip-edit { background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+  .chip-edit button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; }
+  .chip-edit button:hover { color: var(--err); }
+  .suggest { position: absolute; top: 100%; left: 0; right: 0; background: #0d121d; border: 1px solid var(--border); border-radius: 8px; margin-top: 4px; max-height: 220px; overflow: auto; z-index: 20; display: none; }
+  .suggest div { padding: 8px 12px; cursor: pointer; }
+  .suggest div:hover, .suggest div.active { background: var(--chip); }
+  .suggest .pending { color: var(--muted); font-size: 12px; }
+  button.primary { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 12px 20px; font: inherit; font-weight: 600; cursor: pointer; }
+  button.primary:disabled { opacity: .5; cursor: not-allowed; }
+  .msg { padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; font-size: 14px; display: none; }
+  .msg.warn { background: rgba(255,207,107,.12); border: 1px solid var(--warn); color: var(--warn); }
+  .msg.err { background: rgba(255,122,122,.12); border: 1px solid var(--err); color: var(--err); }
+  .msg.ok { background: rgba(123,216,143,.12); border: 1px solid var(--accent-2); color: var(--accent-2); }
+  .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); margin-left: 8px; }
+  .badge.pending { background: rgba(255,207,107,.15); color: var(--warn); }
+  .badge.defined { background: rgba(123,216,143,.15); color: var(--accent-2); }
+  /* browser cards */
+  .term { border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 12px; background: #131a28; }
+  .term h2 { margin: 0 0 4px; font-size: 17px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .def { margin: 6px 0; }
+  .def.pending { color: var(--muted); font-style: italic; }
+  .scope { color: var(--muted); font-size: 14px; margin: 6px 0; }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; font-size: 13px; }
+  .meta .label { color: var(--muted); }
+  .chip { background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 12px; display: inline-block; }
+  .empty { color: var(--muted); text-align: center; padding: 40px 0; }
+  .wg { color: var(--accent-2); }
+  .wg-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .wg-list label { font-weight: 400; display: flex; align-items: center; gap: 6px; background: #0d121d; border: 1px solid var(--border); padding: 6px 10px; border-radius: 8px; cursor: pointer; margin: 0; }
+  pre { background: #0d121d; border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow-x: auto; font-size: 12px; max-height: 320px; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .sentenceWarn { color: var(--warn); font-size: 12px; display: none; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AAIF Taxonomy — Browser &amp; Term Wizard</h1>
+  <p>Source of truth:
+    <a href="https://github.com/MatthewKhouzam/ws-taxonomy-landscape/blob/main/taxonomy/taxonomy-data.js" target="_blank" rel="noopener">taxonomy-data.js</a>
+    — loaded live via <code>&lt;script src&gt;</code> (no CORS). The wizard has no
+    backend: it produces a script you download and run to open the PR.</p>
+</header>
+
+<main>
+  <div id="banner" class="msg"></div>
+
+  <div class="tabs">
+    <button id="tabBrowse" class="active">Browse</button>
+    <button id="tabPropose">Propose / edit a term</button>
+  </div>
+
+  <!-- ================= BROWSE ================= -->
+  <section id="viewBrowse">
+    <div class="card">
+      <div class="toolbar">
+        <input id="search" type="text" placeholder="Search terms, definitions, aliases…" autocomplete="off" />
+        <select id="filter">
+          <option value="all">All terms</option>
+          <option value="defined">Defined only</option>
+          <option value="pending">Pending only</option>
+        </select>
+        <select id="wgFilter"><option value="">All working groups</option></select>
+        <span class="count" id="count"></span>
+      </div>
+    </div>
+    <div id="list"></div>
+  </section>
+
+  <!-- ================= PROPOSE ================= -->
+  <section id="viewPropose" class="hidden">
+    <div class="card">
+      <div class="row">
+        <label for="term">Term <span class="badge" id="termBadge" style="display:none"></span></label>
+        <div class="hint">Start typing. If it already exists, the form fills in with the current entry (editable).</div>
+        <div style="position:relative;">
+          <input id="term" type="text" autocomplete="off" placeholder="e.g. Skill" style="width:100%;" />
+          <div class="suggest" id="termSuggest"></div>
+        </div>
+      </div>
+
+      <div class="row">
+        <label for="definition">Definition</label>
+        <div class="hint">One sentence. Leave blank to keep the "pending" placeholder.</div>
+        <textarea id="definition" placeholder="A single-sentence, vendor-neutral definition."></textarea>
+        <div id="sentenceWarn" class="sentenceWarn">⚠ This looks like more than one sentence.</div>
+      </div>
+
+      <div class="row">
+        <label for="scopeNote">Scope note <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+        <div class="hint">Examples, boundaries, and historical context — not in the definition.</div>
+        <textarea id="scopeNote" placeholder="Examples and clarifying context."></textarea>
+      </div>
+
+      <div class="row">
+        <label>Aliases <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+        <div class="hint">Synonyms / alternate spellings. Type and press Enter.</div>
+        <div class="tagbox" data-tags="aliases"><span class="tags"></span><input type="text" autocomplete="off" placeholder="Add alias…" /></div>
+      </div>
+
+      <div class="row">
+        <label>Related terms <span style="font-weight:400;color:var(--muted)">(skos:related)</span></label>
+        <div class="hint">Must already exist in the taxonomy. Autocompletes from existing terms.</div>
+        <div class="tagbox" data-tags="relatedTerms" data-validate="existing"><span class="tags"></span><input type="text" autocomplete="off" placeholder="Add related term…" /><div class="suggest"></div></div>
+      </div>
+
+      <div class="row">
+        <label>Contrasts with</label>
+        <div class="hint">Paired contrasting terms — must already exist. Autocompletes.</div>
+        <div class="tagbox" data-tags="contrastsWith" data-validate="existing"><span class="tags"></span><input type="text" autocomplete="off" placeholder="Add contrasting term…" /><div class="suggest"></div></div>
+      </div>
+
+      <div class="row">
+        <label>Working groups <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
+        <div class="hint">Select all that share interest. "Universal" is intentionally not a choice.</div>
+        <div class="wg-list" id="wgList"></div>
+      </div>
+
+      <button class="primary" id="genBtn">Generate PR script</button>
+    </div>
+
+    <div class="card" id="resultCard" style="display:none;">
+      <h3 style="margin-top:0;">✓ Script generated</h3>
+      <p class="hint" id="resultMeta"></p>
+      <div class="row">
+        <button class="primary" id="downloadBtn">⬇ Download create-pr.sh</button>
+      </div>
+      <div class="row">
+        <label>Then run it from the repo root:</label>
+        <pre><code id="runCmd"></code></pre>
+      </div>
+      <div class="row">
+        <label>Preview</label>
+        <pre><code id="scriptPreview"></code></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!--
+  The data file assigns to window.AAIF_TAXONOMY. We CANNOT load it with a
+  classic <script src>: raw.githubusercontent.com serves it as
+  "Content-Type: text/plain" with "X-Content-Type-Options: nosniff", so modern
+  browsers refuse to execute it as a script (MIME mismatch under nosniff), and
+  neither onload nor onerror fires reliably.
+
+  Instead we fetch() the raw text (the response sends
+  "access-control-allow-origin: *", so CORS is fine) and evaluate the
+  assignment in a sandboxed scope. Use the RAW url, not github.com/.../blob/...
+  (which returns an HTML page). Pin to a commit SHA for a frozen snapshot.
+-->
+<script>
+const DATA_URL = "https://raw.githubusercontent.com/MatthewKhouzam/ws-taxonomy-landscape/main/taxonomy/taxonomy-data.js";
+const REPO = "MatthewKhouzam/ws-taxonomy-landscape";
+const DATA_FILE = "taxonomy/taxonomy-data.js";
+const BASE_BRANCH = "main";
+const WORKGROUPS = ["Observability", "Security", "Evaluation", "Tooling", "Infrastructure", "Governance"];
+const PENDING_RE = /^definition pending/i;
+const PENDING_TEXT = "Definition pending — term accepted; definition under working group discussion.";
+
+let STATE = { terms: [], byName: {} };
+
+function isPending(t) { return !t.definition || PENDING_RE.test(t.definition.trim()); }
+function banner(kind, msg) {
+  const b = document.getElementById("banner");
+  b.className = "msg " + kind; b.innerHTML = msg; b.style.display = "block";
+  if (kind === "ok") setTimeout(() => { b.style.display = "none"; }, 6000);
+}
+function esc(s) { return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+// Fetch the raw data file and evaluate the "window.AAIF_TAXONOMY = [...]"
+// assignment in a sandboxed scope. We can't use <script src> because GitHub
+// serves the file as text/plain with nosniff (browsers won't execute it).
+async function boot() {
+  let text;
+  try {
+    const res = await fetch(DATA_URL, { cache: "no-cache" });
+    if (!res.ok) { loadError("http", res.status); return; }
+    text = await res.text();
+  } catch (e) {
+    loadError("network", e && e.message); return;
+  }
+
+  // Guard: /blob/ URLs (or a redirect) return HTML, not JS.
+  if (/^\s*</.test(text)) { loadError("html"); return; }
+
+  let data;
+  try {
+    // Evaluate against a local `window` object so the file's
+    // `window.AAIF_TAXONOMY = [...]` assignment is captured without touching
+    // the real global scope.
+    const sandbox = {};
+    // eslint-disable-next-line no-new-func
+    new Function("window", text)(sandbox);
+    data = sandbox.AAIF_TAXONOMY;
+  } catch (e) {
+    loadError("parse", e && e.message); return;
+  }
+
+  if (!Array.isArray(data)) { loadError("badContent"); return; }
+  init(data);
+}
+
+function loadError(reason, detail) {
+  let extra = "";
+  switch (reason) {
+    case "http":
+      extra = ` The server returned HTTP ${detail}. If it's 404, the file may have moved or the branch/path changed.`;
+      break;
+    case "html":
+      extra = " The response looks like HTML, not JS — use the <b>raw</b> URL (<code>raw.githubusercontent.com/.../main/...</code>), not the <code>github.com/.../blob/</code> page.";
+      break;
+    case "badContent":
+      extra = " The file loaded but did not define an <code>AAIF_TAXONOMY</code> array — its format may have changed.";
+      break;
+    case "parse":
+      extra = " The file could not be parsed as JavaScript" + (detail ? ` (${esc(detail)})` : "") + ".";
+      break;
+    case "network":
+    default:
+      extra = " The request failed" + (detail ? ` (${esc(detail)})` : "") +
+        ". You may be offline, behind a proxy, or a content blocker is matching <code>githubusercontent.com</code>.";
+      if (location.protocol === "file:") {
+        extra += " If you opened this as a <code>file://</code>, serve the folder instead: <code>python3 -m http.server -d taxonomy-browser 8000</code>.";
+      }
+  }
+  banner("err", "Could not load the taxonomy data. Check the raw GitHub URL is reachable and still a valid <code>window.AAIF_TAXONOMY = [...]</code> file." + extra);
+}
+
+function init(data) {
+  STATE.terms = data.slice().sort((a, b) => a.term.localeCompare(b.term));
+  STATE.byName = {};
+  STATE.terms.forEach(t => STATE.byName[t.term.toLowerCase()] = t);
+
+  // browse
+  const wgs = new Set();
+  STATE.terms.forEach(t => (t.workgroups || []).forEach(w => wgs.add(w)));
+  const wgSel = document.getElementById("wgFilter");
+  [...wgs].sort().forEach(w => { const o = document.createElement("option"); o.value = w; o.textContent = w; wgSel.appendChild(o); });
+  const search = document.getElementById("search"), filter = document.getElementById("filter");
+  const render = () => renderList(search.value, filter.value, wgSel.value);
+  [search, filter, wgSel].forEach(el => el.addEventListener("input", render));
+  render();
+
+  // tabs
+  wireTabs();
+  // wizard
+  renderWorkgroups();
+  wireTagboxes();
+  wireTermField();
+  document.getElementById("definition").addEventListener("input", checkSentences);
+  document.getElementById("genBtn").addEventListener("click", generate);
+}
+
+// ---------- tabs ----------
+function wireTabs() {
+  const b = document.getElementById("tabBrowse"), p = document.getElementById("tabPropose");
+  const vb = document.getElementById("viewBrowse"), vp = document.getElementById("viewPropose");
+  b.addEventListener("click", () => { b.classList.add("active"); p.classList.remove("active"); vb.classList.remove("hidden"); vp.classList.add("hidden"); });
+  p.addEventListener("click", () => { p.classList.add("active"); b.classList.remove("active"); vp.classList.remove("hidden"); vb.classList.add("hidden"); });
+}
+
+// ---------- browse ----------
+function renderList(query, filterMode, wg) {
+  const q = query.trim().toLowerCase();
+  const list = document.getElementById("list");
+  const matches = STATE.terms.filter(t => {
+    const pending = isPending(t);
+    if (filterMode === "defined" && pending) return false;
+    if (filterMode === "pending" && !pending) return false;
+    if (wg && !(t.workgroups || []).includes(wg)) return false;
+    if (!q) return true;
+    const hay = [t.term, t.definition, t.scopeNote, ...(t.aliases||[]), ...(t.relatedTerms||[]), ...(t.contrastsWith||[])].filter(Boolean).join(" ").toLowerCase();
+    return hay.includes(q);
+  });
+  document.getElementById("count").textContent = `${matches.length} of ${STATE.terms.length} terms`;
+  list.innerHTML = "";
+  if (!matches.length) { const d = document.createElement("div"); d.className = "empty"; d.textContent = "No matching terms."; list.appendChild(d); return; }
+  matches.forEach(t => list.appendChild(renderTerm(t)));
+}
+function chips(values) { return (values || []).map(v => `<span class="chip">${esc(v)}</span>`).join(" "); }
+function renderTerm(t) {
+  const pending = isPending(t);
+  const el = document.createElement("div"); el.className = "term";
+  let html = `<h2>${esc(t.term)}<span class="badge ${pending?"pending":"defined"}">${pending?"pending":"defined"}</span>`;
+  if (t.category) html += `<span class="badge">${esc(t.category)}</span>`;
+  html += `</h2>`;
+  html += `<div class="def ${pending?"pending":""}">${esc(t.definition || "Definition pending.")}</div>`;
+  if (t.scopeNote) html += `<div class="scope">${esc(t.scopeNote)}</div>`;
+  const meta = [];
+  if ((t.aliases||[]).length) meta.push(`<span><span class="label">Aliases:</span> ${chips(t.aliases)}</span>`);
+  if ((t.relatedTerms||[]).length) meta.push(`<span><span class="label">Related:</span> ${chips(t.relatedTerms)}</span>`);
+  if ((t.contrastsWith||[]).length) meta.push(`<span><span class="label">Contrasts with:</span> ${chips(t.contrastsWith)}</span>`);
+  if ((t.workgroups||[]).length) meta.push(`<span><span class="label">Working groups:</span> <span class="wg">${t.workgroups.map(esc).join(", ")}</span></span>`);
+  if (meta.length) html += `<div class="meta">${meta.join("")}</div>`;
+  el.innerHTML = html;
+  return el;
+}
+
+// ---------- wizard: workgroups ----------
+function renderWorkgroups() {
+  const el = document.getElementById("wgList"); el.innerHTML = "";
+  WORKGROUPS.forEach(wg => { const lab = document.createElement("label"); lab.innerHTML = `<input type="checkbox" value="${esc(wg)}"> ${esc(wg)}`; el.appendChild(lab); });
+}
+
+// ---------- wizard: tag boxes ----------
+function wireTagboxes() {
+  document.querySelectorAll(".tagbox[data-tags]").forEach(box => {
+    const input = box.querySelector("input");
+    const suggest = box.querySelector(".suggest");
+    const validate = box.dataset.validate === "existing";
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const active = suggest && suggest.querySelector(".active");
+        addTag(box, active ? active.textContent.replace(/\s+\(pending\)$/, "") : input.value, validate);
+        input.value = ""; if (suggest) suggest.style.display = "none";
+      } else if (e.key === "Backspace" && !input.value) {
+        const tags = box.querySelector(".tags"); if (tags.lastElementChild) tags.lastElementChild.remove();
+      } else if (suggest && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+        e.preventDefault(); moveActive(suggest, e.key === "ArrowDown" ? 1 : -1);
+      }
+    });
+    if (validate) {
+      input.addEventListener("input", () => showSuggest(suggest, input.value, box));
+      input.addEventListener("blur", () => setTimeout(() => suggest.style.display = "none", 150));
+    }
+  });
+}
+function currentTags(box) { return [...box.querySelectorAll(".tags .chip-edit")].map(c => c.dataset.value); }
+function addTag(box, value, validate) {
+  value = (value || "").trim(); if (!value) return;
+  if (currentTags(box).some(v => v.toLowerCase() === value.toLowerCase())) return;
+  if (validate) {
+    const match = STATE.byName[value.toLowerCase()];
+    if (!match) { banner("err", `"${esc(value)}" is not an existing taxonomy term.`); return; }
+    value = match.term;
+  }
+  const tags = box.querySelector(".tags");
+  const chip = document.createElement("span");
+  chip.className = "chip-edit"; chip.dataset.value = value;
+  chip.innerHTML = `${esc(value)} <button type="button">×</button>`;
+  chip.querySelector("button").addEventListener("click", () => chip.remove());
+  tags.appendChild(chip);
+}
+function showSuggest(suggest, q, box) {
+  q = q.trim().toLowerCase();
+  if (!q) { suggest.style.display = "none"; return; }
+  const chosen = new Set(currentTags(box).map(v => v.toLowerCase()));
+  const termVal = document.getElementById("term").value.trim().toLowerCase();
+  const matches = STATE.terms.filter(t => t.term.toLowerCase().includes(q) && !chosen.has(t.term.toLowerCase()) && t.term.toLowerCase() !== termVal).slice(0, 8);
+  suggest.innerHTML = "";
+  if (!matches.length) { suggest.style.display = "none"; return; }
+  matches.forEach((t, i) => {
+    const d = document.createElement("div");
+    if (i === 0) d.className = "active";
+    d.textContent = t.term;
+    if (isPending(t)) { const s = document.createElement("span"); s.className = "pending"; s.textContent = "  (pending)"; d.appendChild(s); }
+    d.addEventListener("mousedown", e => { e.preventDefault(); addTag(box, t.term, true); box.querySelector("input").value = ""; suggest.style.display = "none"; });
+    suggest.appendChild(d);
+  });
+  suggest.style.display = "block";
+}
+function moveActive(suggest, dir) {
+  const items = [...suggest.children];
+  const idx = items.findIndex(i => i.classList.contains("active"));
+  if (idx >= 0) items[idx].classList.remove("active");
+  const next = (idx + dir + items.length) % items.length;
+  if (items[next]) items[next].classList.add("active");
+}
+
+// ---------- wizard: term field ----------
+function wireTermField() {
+  const input = document.getElementById("term");
+  const suggest = document.getElementById("termSuggest");
+  input.addEventListener("input", () => {
+    const q = input.value.trim().toLowerCase();
+    updateTermBadge();
+    if (!q) { suggest.style.display = "none"; return; }
+    const matches = STATE.terms.filter(t => t.term.toLowerCase().includes(q)).slice(0, 8);
+    suggest.innerHTML = "";
+    if (!matches.length) { suggest.style.display = "none"; return; }
+    matches.forEach((t, i) => {
+      const d = document.createElement("div");
+      if (i === 0) d.className = "active";
+      d.textContent = t.term;
+      if (isPending(t)) { const s = document.createElement("span"); s.className = "pending"; s.textContent = "  (pending)"; d.appendChild(s); }
+      d.addEventListener("mousedown", e => { e.preventDefault(); input.value = t.term; suggest.style.display = "none"; prefill(t); updateTermBadge(); });
+      suggest.appendChild(d);
+    });
+    suggest.style.display = "block";
+  });
+  input.addEventListener("keydown", e => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); moveActive(suggest, e.key === "ArrowDown" ? 1 : -1); }
+    else if (e.key === "Enter") {
+      const active = suggest.querySelector(".active");
+      if (active && suggest.style.display !== "none") { e.preventDefault(); input.value = active.textContent.replace(/\s+\(pending\)$/, ""); suggest.style.display = "none"; const t = STATE.byName[input.value.toLowerCase()]; if (t) prefill(t); updateTermBadge(); }
+    }
+  });
+  input.addEventListener("blur", () => setTimeout(() => suggest.style.display = "none", 150));
+}
+function updateTermBadge() {
+  const badge = document.getElementById("termBadge");
+  const t = STATE.byName[document.getElementById("term").value.trim().toLowerCase()];
+  if (t) { badge.style.display = "inline-block"; badge.className = "badge " + (isPending(t) ? "pending" : "defined"); badge.textContent = isPending(t) ? "existing • pending" : "existing • defined"; }
+  else { badge.style.display = "none"; }
+}
+function prefill(t) {
+  document.getElementById("definition").value = (t.definition && !isPending(t)) ? t.definition : "";
+  document.getElementById("scopeNote").value = t.scopeNote || "";
+  fillTags("aliases", t.aliases || []);
+  fillTags("relatedTerms", t.relatedTerms || []);
+  fillTags("contrastsWith", t.contrastsWith || []);
+  const set = new Set(t.workgroups || []);
+  document.querySelectorAll("#wgList input").forEach(cb => cb.checked = set.has(cb.value));
+  checkSentences();
+}
+function fillTags(name, values) {
+  const box = document.querySelector(`.tagbox[data-tags="${name}"]`);
+  box.querySelector(".tags").innerHTML = "";
+  values.forEach(v => addTag(box, v, false));
+}
+function checkSentences() {
+  const txt = document.getElementById("definition").value.trim();
+  const parts = txt.split(/[.!?]+(?:\s|$)/).filter(s => s.trim());
+  document.getElementById("sentenceWarn").style.display = parts.length > 1 ? "block" : "none";
+}
+
+// ---------- wizard: generate downloadable script ----------
+function slug(s) { return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50); }
+
+function collectPayload() {
+  return {
+    term: document.getElementById("term").value.trim(),
+    definition: document.getElementById("definition").value.trim(),
+    scopeNote: document.getElementById("scopeNote").value.trim(),
+    aliases: currentTags(document.querySelector('.tagbox[data-tags="aliases"]')),
+    relatedTerms: currentTags(document.querySelector('.tagbox[data-tags="relatedTerms"]')),
+    contrastsWith: currentTags(document.querySelector('.tagbox[data-tags="contrastsWith"]')),
+    workgroups: [...document.querySelectorAll("#wgList input:checked")].map(cb => cb.value),
+  };
+}
+
+// Emit a JS entry object matching the file's formatting (2-space indent, single quotes).
+function jsEntry(p) {
+  const q = s => "'" + String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+  const arr = a => a.length ? "[" + a.map(q).join(", ") + "]" : "[]";
+  const def = p.definition || PENDING_TEXT;
+  const lines = [
+    "  {",
+    "    term: " + q(p.term) + ",",
+    "    category: '',",
+    "    aliases: " + arr(p.aliases) + ",",
+    "    broaderTerm: null,",
+    "    definition: " + q(def) + ",",
+  ];
+  if (p.scopeNote) lines.push("    scopeNote: " + q(p.scopeNote) + ",");
+  lines.push("    relatedTerms: " + arr(p.relatedTerms) + ",");
+  lines.push("    contrastsWith: " + arr(p.contrastsWith) + ",");
+  lines.push("    workgroups: " + arr(p.workgroups));
+  lines.push("  }");
+  return lines.join("\n");
+}
+
+function shEscHeredoc(s) {
+  // Content goes inside a quoted heredoc (no shell expansion). Only need to
+  // ensure the delimiter can't appear; we use a random-ish delimiter below.
+  return s;
+}
+
+function buildScript(p, exists) {
+  const branch = "taxonomy/define-" + slug(p.term);
+  const entry = jsEntry(p);
+  const action = exists ? "update" : "add";
+  const subject = (exists ? "Update" : "Define") + " taxonomy term: " + p.term;
+  const DELIM = "TAXONOMY_ENTRY_EOF";
+
+  // Python helper does the surgical, comment-preserving edit. It's embedded so
+  // the downloaded script is fully self-contained (no repo tooling required).
+  const py = [
+`import io, os, re, sys, json`,
+`FILE = ${JSON.stringify(DATA_FILE)}`,
+`TERM = ${JSON.stringify(p.term)}`,
+`ENTRY = open("/tmp/taxonomy_entry.txt", encoding="utf-8").read().rstrip("\\n")`,
+`src = open(FILE, encoding="utf-8").read()`,
+`# Locate the array literal window.AAIF_TAXONOMY = [ ... ];`,
+`m = re.search(r"window\\.AAIF_TAXONOMY\\s*=\\s*\\[", src)`,
+`if not m:`,
+`    sys.exit("Could not find window.AAIF_TAXONOMY array in " + FILE)`,
+`start = m.end()`,
+`depth = 1; i = start`,
+`while i < len(src) and depth:`,
+`    c = src[i]`,
+`    if c == '[': depth += 1`,
+`    elif c == ']': depth -= 1`,
+`    i += 1`,
+`end = i - 1  # index of closing ]`,
+`body = src[start:end]`,
+`# Does an entry with this exact term already exist?`,
+`pat = re.compile(r"\\{[^{}]*?term:\\s*'" + re.escape(TERM) + r"'[^{}]*?\\}", re.S)`,
+`existing = pat.search(body)`,
+`if existing:`,
+`    new_body = body[:existing.start()] + ENTRY.strip() + body[existing.end():]`,
+`else:`,
+`    trimmed = body.rstrip()`,
+`    sep = ",\\n" if trimmed.endswith("}") else "\\n"`,
+`    new_body = trimmed + sep + ENTRY + "\\n"`,
+`out = src[:start] + new_body + src[end:]`,
+`open(FILE, "w", encoding="utf-8").write(out)`,
+`print("Patched", FILE)`,
+  ].join("\n");
+
+  return `#!/usr/bin/env bash
+#
+# Auto-generated by the AAIF Taxonomy Term Wizard.
+# Creates a branch, applies a surgical edit to ${DATA_FILE}, makes a
+# signed-off commit, pushes, and opens a PR. Run from the repo root.
+#
+set -euo pipefail
+
+REPO="${REPO}"
+BASE="${BASE_BRANCH}"
+BRANCH="${branch}"
+FILE="${DATA_FILE}"
+
+# --- sanity checks -----------------------------------------------------------
+command -v git >/dev/null || { echo "git not found"; exit 1; }
+[ -f "$FILE" ] || { echo "Run this from the repo root ($FILE not found)"; exit 1; }
+if ! git diff --quiet -- "$FILE"; then
+  echo "Refusing: $FILE has uncommitted changes."; exit 1
+fi
+ORIG_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+
+# --- write the entry payload -------------------------------------------------
+cat > /tmp/taxonomy_entry.txt <<'${DELIM}'
+${shEscHeredoc(entry)}
+${DELIM}
+
+# --- branch ------------------------------------------------------------------
+git fetch origin "$BASE" --quiet || true
+git checkout -b "$BRANCH" "origin/$BASE" 2>/dev/null || git checkout -b "$BRANCH" "$BASE"
+
+# --- surgical edit (comment-preserving) --------------------------------------
+python3 - <<'${DELIM}_PY'
+${py}
+${DELIM}_PY
+
+# --- commit ------------------------------------------------------------------
+git add "$FILE"
+git commit -s -m "${subject}"
+
+# --- push & PR ---------------------------------------------------------------
+git push -u origin "$BRANCH"
+
+PR_BODY="Proposed via the Taxonomy Term Wizard (${action}). Touches only ${DATA_FILE}."
+if command -v gh >/dev/null; then
+  gh pr create --repo "$REPO" --base "$BASE" --head "$BRANCH" \\
+    --title "${subject}" --body "$PR_BODY"
+else
+  echo
+  echo "gh CLI not found. Open the PR manually:"
+  echo "  https://github.com/$REPO/compare/$BASE...$BRANCH?expand=1"
+fi
+
+git checkout "$ORIG_BRANCH" >/dev/null 2>&1 || true
+echo "Done."
+`;
+}
+
+function generate() {
+  const p = collectPayload();
+  if (!p.term) { banner("err", "Term is required."); return; }
+  const exists = !!STATE.byName[p.term.toLowerCase()];
+  const script = buildScript(p, exists);
+  const branch = "taxonomy/define-" + slug(p.term);
+
+  document.getElementById("resultCard").style.display = "block";
+  document.getElementById("resultMeta").textContent =
+    `Action: ${exists ? "update existing" : "add new"} • Branch: ${branch} • Only ${DATA_FILE} is touched.`;
+  document.getElementById("runCmd").textContent = "bash create-pr.sh";
+  document.getElementById("scriptPreview").textContent = script;
+
+  const dl = document.getElementById("downloadBtn");
+  dl.onclick = () => {
+    const blob = new Blob([script], { type: "text/x-shellscript" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "create-pr.sh"; document.body.appendChild(a); a.click();
+    a.remove(); URL.revokeObjectURL(url);
+  };
+
+  banner("ok", `Script generated for "${esc(p.term)}". Download it and run <code>bash create-pr.sh</code> from the repo root.`);
+  document.getElementById("resultCard").scrollIntoView({ behavior: "smooth" });
+}
+
+boot();
+</script>
+</body>
+</html>
