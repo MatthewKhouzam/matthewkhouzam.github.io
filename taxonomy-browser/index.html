@@ -135,7 +135,7 @@
       <div class="ai-bar" id="aiBar">
         <button type="button" class="ai" id="aiFillBtn" title="Draft the fields for this term with the selected model">✨ Fill with AI</button>
         <select id="aiModel" class="ai-model" title="Choose which model drafts the fields"><option value="">Loading models…</option></select>
-        <span class="ai-text">Drafts the <strong>definition</strong>, <strong>scope note</strong> and <strong>aliases</strong> from the term name. Always review — you own every word.</span>
+        <span class="ai-text">Drafts the <strong>definition</strong>, <strong>scope note</strong>, <strong>aliases</strong>, and suggests <strong>related terms</strong>, <strong>contrasts</strong> and <strong>working groups</strong> (only existing terms/groups are used). Always review — you own every word.</span>
         <span class="ai-status checking" id="aiStatus">Checking…</span>
       </div>
 
@@ -176,13 +176,39 @@
         <div class="wg-list" id="wgList"></div>
       </div>
 
-      <button class="primary" id="genBtn">Generate PR script</button>
+      <button class="primary" id="genBtn">Prepare PR</button>
     </div>
 
     <div class="card" id="resultCard" style="display:none;">
-      <h3 style="margin-top:0;">✓ Script generated</h3>
+      <h3 style="margin-top:0;">✓ Ready to submit</h3>
       <p class="hint" id="resultMeta"></p>
+
       <div class="row">
+        <label>Option A — Create the PR from your fork on GitHub <span style="font-weight:400;color:var(--muted)">(no download, no local git)</span></label>
+        <div class="hint">You almost certainly don't have write access to <code id="ghUpstream"></code>, so the PR comes from <b>your own fork</b>. Enter your GitHub username. With a <b>token</b>, the button does everything through the GitHub API — creates the branch, commits the spliced <code id="ghFileName"></code>, and opens the PR — in one click. Without a token, it falls back to opening a prefilled commit page (file, commit title and description prefilled) and copies the branch name for you.</div>
+        <div class="toolbar" style="margin-bottom:8px;">
+          <input id="ghUser" type="text" placeholder="your-github-username" autocomplete="off" style="min-width:200px;" />
+          <input id="ghToken" type="password" placeholder="GitHub token (optional)" autocomplete="off" style="min-width:240px;" />
+          <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400;margin:0;"><input type="checkbox" id="ghRemember"> remember token</label>
+        </div>
+        <div class="toolbar" style="margin-bottom:12px;">
+          <button class="primary" id="ghPrBtn">🔗 Create PR on GitHub</button>
+        </div>
+        <div class="hint">
+          The token is used <b>only</b> for direct calls to <code>api.github.com</code> from your browser — it is never sent anywhere else. "Remember" stores it in this browser's <code>localStorage</code>; leave it unchecked to keep it in memory for this session only.
+          Create a fine-grained token with <b>Contents: read &amp; write</b> and <b>Pull requests: read &amp; write</b> on your fork
+          (<a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener">github.com/settings/tokens</a>), or a classic token with the <code>repo</code> scope.
+          No fork yet? The button creates one for you (with a token) or opens the fork page (without).
+        </div>
+        <div class="row" style="margin-top:14px;">
+          <label>Entry <span style="font-weight:400;color:var(--muted)">(used automatically; shown as a fallback)</span></label>
+          <pre><code id="entryPreview"></code></pre>
+        </div>
+      </div>
+
+      <div class="row" style="border-top:1px solid var(--border); padding-top:18px; margin-top:6px;">
+        <label>Option B — Download a script and run it locally</label>
+        <div class="hint">Fully automated: branches, applies a comment-preserving surgical edit, signed-off commit, push, and PR via <code>gh</code>.</div>
         <button class="primary" id="downloadBtn">⬇ Download create-pr.sh</button>
       </div>
       <div class="row">
@@ -190,7 +216,7 @@
         <pre><code id="runCmd"></code></pre>
       </div>
       <div class="row">
-        <label>Preview</label>
+        <label>Script preview</label>
         <pre><code id="scriptPreview"></code></pre>
       </div>
     </div>
@@ -216,7 +242,7 @@ const DATA_URL = "https://raw.githubusercontent.com/aaif/ws-taxonomy-landscape/m
 const REPO = "aaif/ws-taxonomy-landscape";
 const DATA_FILE = "taxonomy/taxonomy-data.js";
 const BASE_BRANCH = "main";
-const WORKGROUPS = ["Governance, Risk & Regulatory Alignment", "Identity & Trust", "Observability & Traceability", "Security & Privacy", "Workflows & Process Integration"];
+const WORKGROUPS = ["Accuracy & Reliability", "Agentic Commerce", "Governance, Risk & Regulatory Alignment", "Identity & Trust", "Observability & Traceability", "Security & Privacy", "Workflows & Process Integration"];
 const PENDING_RE = /^definition pending/i;
 const PENDING_TEXT = "Definition pending — term accepted; definition under working group discussion.";
 
@@ -260,6 +286,7 @@ async function boot() {
   }
 
   if (!Array.isArray(data)) { loadError("badContent"); return; }
+  STATE.rawText = text;   // keep the raw file so we can splice + prefill a commit
   init(data);
 }
 
@@ -315,6 +342,9 @@ function init(data) {
 
   // AI assist (Grok / xAI via Puter)
   AI.init();
+
+  // Pre-fill a remembered GitHub token (if the user opted to store one).
+  GH.loadRememberedToken();
 }
 
 // ---------- tabs ----------
@@ -495,6 +525,132 @@ function checkSentences() {
 // ---------- wizard: generate downloadable script ----------
 function slug(s) { return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50); }
 
+// Shared PR/commit metadata so the downloadable script and the in-browser
+// GitHub flow speak with one voice.
+function provenanceLine(attribution) {
+  const attr = attribution || { origin: "manual", aiPct: 0, editedPct: 100 };
+  if (attr.origin === "manual") return "Definition authorship: 100% human-written (no AI draft used).";
+  if (attr.origin === "ai") return "Definition authorship: 100% AI-drafted (Grok/xAI), 0% manually edited — unedited.";
+  return "Definition authorship: " + attr.aiPct + "% AI-drafted (Grok/xAI), " + attr.editedPct + "% manually edited.";
+}
+function commitSubject(p, exists) { return (exists ? "Update" : "Define") + " taxonomy term: " + p.term; }
+function prBody(p, exists, attribution) {
+  const action = exists ? "update" : "add";
+  return `Proposed via the Taxonomy Term Wizard (${action}). Touches only ${DATA_FILE}.\n\n${provenanceLine(attribution)}`;
+}
+
+// Splice the generated entry into the raw data file text, in the browser —
+// the same comment-preserving surgery the bash/Python script does, so we can
+// prefill GitHub's "new file" editor with the FULL resulting file. Returns the
+// new file text, or null if the array couldn't be located.
+function spliceEntry(rawText, term, entryText) {
+  if (!rawText) return null;
+  const m = /window\.AAIF_TAXONOMY\s*=\s*\[/.exec(rawText);
+  if (!m) return null;
+  const start = m.index + m[0].length;
+  let depth = 1, i = start;
+  while (i < rawText.length && depth) {
+    const c = rawText[i];
+    if (c === "[") depth++;
+    else if (c === "]") depth--;
+    i++;
+  }
+  const end = i - 1; // index of the matching closing ]
+  const body = rawText.slice(start, end);
+  // Replace an existing entry for this exact term, else append.
+  const pat = new RegExp("\\{[^{}]*?term:\\s*'" + term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "'[^{}]*?\\}", "s");
+  let newBody;
+  const existing = pat.exec(body);
+  if (existing) {
+    newBody = body.slice(0, existing.index) + entryText.trim() + body.slice(existing.index + existing[0].length);
+  } else {
+    const trimmed = body.replace(/\s+$/, "");
+    const sep = trimmed.endsWith("}") ? ",\n" : "\n";
+    newBody = trimmed + sep + entryText + "\n";
+  }
+  return rawText.slice(0, start) + newBody + rawText.slice(end);
+}
+
+// ---------- GitHub REST API client (browser-side, user-supplied token) ----------
+// All write operations (create ref, put file contents, open PR) require auth.
+// A static page has no backend, so the token is the user's own PAT, held only
+// in memory (or localStorage if they opt in) and sent ONLY to api.github.com.
+const GH = (function () {
+  const API = "https://api.github.com";
+  const LS_KEY = "aaif_gh_token";
+
+  function getToken() {
+    const el = document.getElementById("ghToken");
+    const inField = el && el.value.trim();
+    if (inField) return inField;
+    try { return localStorage.getItem(LS_KEY) || ""; } catch (e) { return ""; }
+  }
+  function persistTokenIfRequested() {
+    const el = document.getElementById("ghToken");
+    const remember = document.getElementById("ghRemember");
+    if (!el) return;
+    const tok = el.value.trim();
+    try {
+      if (remember && remember.checked && tok) localStorage.setItem(LS_KEY, tok);
+      else if (remember && !remember.checked) localStorage.removeItem(LS_KEY);
+    } catch (e) {}
+  }
+  function loadRememberedToken() {
+    try {
+      const tok = localStorage.getItem(LS_KEY);
+      if (tok) {
+        const el = document.getElementById("ghToken");
+        const remember = document.getElementById("ghRemember");
+        if (el) el.value = tok;
+        if (remember) remember.checked = true;
+      }
+    } catch (e) {}
+  }
+
+  async function api(method, path, body) {
+    const token = getToken();
+    const res = await fetch(API + path, {
+      method,
+      headers: {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...(token ? { "Authorization": "Bearer " + token } : {}),
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    let data = null;
+    const text = await res.text();
+    if (text) { try { data = JSON.parse(text); } catch (e) { data = { message: text }; } }
+    if (!res.ok) {
+      const msg = (data && data.message) ? data.message : ("HTTP " + res.status);
+      const err = new Error(msg); err.status = res.status; err.data = data; throw err;
+    }
+    return data;
+  }
+
+  // base64-encode a UTF-8 string (btoa needs latin1; encode first).
+  function b64(str) {
+    const bytes = new TextEncoder().encode(str);
+    let bin = "";
+    const CH = 0x8000;
+    for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    return btoa(bin);
+  }
+
+  const whoAmI      = () => api("GET", "/user");
+  const getRepo     = (ownerRepo) => api("GET", `/repos/${ownerRepo}`);
+  const createFork  = (upstream) => api("POST", `/repos/${upstream}/forks`);
+  const getBranch   = (ownerRepo, branch) => api("GET", `/repos/${ownerRepo}/git/ref/heads/${encodeURIComponent(branch)}`);
+  const createRef   = (ownerRepo, ref, sha) => api("POST", `/repos/${ownerRepo}/git/refs`, { ref, sha });
+  const getContent  = (ownerRepo, path, ref) => api("GET", `/repos/${ownerRepo}/contents/${path}?ref=${encodeURIComponent(ref)}`);
+  const putContent  = (ownerRepo, path, payload) => api("PUT", `/repos/${ownerRepo}/contents/${path}`, payload);
+  const createPull  = (upstream, payload) => api("POST", `/repos/${upstream}/pulls`, payload);
+
+  return { getToken, persistTokenIfRequested, loadRememberedToken, api, b64,
+           whoAmI, getRepo, createFork, getBranch, createRef, getContent, putContent, createPull };
+})();
+
 function collectPayload() {
   return {
     term: document.getElementById("term").value.trim(),
@@ -538,22 +694,12 @@ function buildScript(p, exists, attribution) {
   const branch = "taxonomy/define-" + slug(p.term);
   const entry = jsEntry(p);
   const action = exists ? "update" : "add";
-  const subject = (exists ? "Update" : "Define") + " taxonomy term: " + p.term;
+  const subject = commitSubject(p, exists);
   const DELIM = "TAXONOMY_ENTRY_EOF";
 
   // Attribution line: how much of the definition was AI-drafted ("vibed") vs
   // human-authored/edited. Recorded in the commit body and PR for provenance.
-  const attr = attribution || { origin: "manual", aiPct: 0, editedPct: 100 };
-  let provenance;
-  if (attr.origin === "manual") {
-    provenance = "Definition authorship: 100% human-written (no AI draft used).";
-  } else if (attr.origin === "ai") {
-    provenance = "Definition authorship: 100% AI-drafted (Grok/xAI), 0% manually edited — unedited.";
-  } else {
-    provenance = "Definition authorship: " + attr.aiPct + "% AI-drafted (Grok/xAI), " +
-      attr.editedPct + "% manually edited.";
-  }
-  const commitBody = provenance;
+  const commitBody = provenanceLine(attribution);
 
   // Python helper does the surgical, comment-preserving edit. It's embedded so
   // the downloaded script is fully self-contained (no repo tooling required).
@@ -675,6 +821,7 @@ function generate() {
   }
 
   const script = buildScript(p, exists, attribution);
+  const entry = jsEntry(p);
   const branch = "taxonomy/define-" + slug(p.term);
 
   let attrText = "";
@@ -687,6 +834,201 @@ function generate() {
     `Action: ${exists ? "update existing" : "add new"} • Branch: ${branch} • Only ${DATA_FILE} is touched.${attrText}`;
   document.getElementById("runCmd").textContent = "bash create-pr.sh";
   document.getElementById("scriptPreview").textContent = script;
+  document.getElementById("entryPreview").textContent = entry;
+  document.getElementById("ghFileName").textContent = DATA_FILE;
+  document.getElementById("ghUpstream").textContent = REPO;
+
+  // Option A: open a PR from the user's personal fork.
+  //
+  // Two paths:
+  //   1. With a token → do it all via the GitHub REST API (create branch,
+  //      commit the spliced file, open the PR). One click, no manual paste.
+  //   2. Without a token → fall back to GitHub's prefilled `/new/` editor
+  //      (file + commit title + description prefilled) or, if that URL would be
+  //      too long, the plain `/edit/` editor with the entry on the clipboard.
+  //
+  // GitHub `/new/<branch>/<dir>?filename=&value=&message=&description=` prefills
+  // file content + commit title + description, but NOT the new-branch name
+  // (that's typed in the commit dialog — we copy it for a one-paste).
+  const repoName = REPO.split("/")[1];       // e.g. "ws-taxonomy-landscape"
+  const fileDir = DATA_FILE.split("/").slice(0, -1).join("/");
+  const subject = commitSubject(p, exists);
+  const description = provenanceLine(attribution);
+  const body = prBody(p, exists, attribution);
+  const recBranch = branch;                  // new-branch name
+  const ghBtn = document.getElementById("ghPrBtn");
+
+  // Splice against the fork's current file (fallback: upstream text from boot).
+  async function splicedFileFor(ownerRepo) {
+    let src = STATE.rawText || null;
+    try {
+      const rawFork = `https://raw.githubusercontent.com/${ownerRepo}/${BASE_BRANCH}/${DATA_FILE}`;
+      const r = await fetch(rawFork, { cache: "no-cache" });
+      if (r.ok) { const t = await r.text(); if (t && !/^\s*</.test(t)) src = t; }
+    } catch (e) { /* use upstream text */ }
+    return spliceEntry(src, p.term, entry);
+  }
+
+  function buildPrefillUrl(ownerRepo, full) {
+    if (!full) return null;
+    const params = new URLSearchParams({
+      filename: DATA_FILE.split("/").pop(),
+      value: full, message: subject, description,
+    });
+    const url = `https://github.com/${ownerRepo}/new/${BASE_BRANCH}/${fileDir}?${params.toString()}`;
+    return url.length > 30000 ? null : url;   // stay under URL length caps
+  }
+
+  async function pasteFallback(ownerRepo, note) {
+    let copied = false;
+    try { await navigator.clipboard.writeText(entry); copied = true; } catch (e) {}
+    window.open(`https://github.com/${ownerRepo}/edit/${BASE_BRANCH}/${DATA_FILE}`, "_blank", "noopener");
+    banner("warn", `${copied ? "Entry copied to clipboard." : "Copy the entry below."} Couldn't prefill automatically${note ? " (" + note + ")" : ""}, so opened the plain editor — paste the entry before the closing <code>];</code>, then <b>Commit changes → Create a new branch → Propose changes</b>.`);
+  }
+
+  // Full API-driven PR creation. Returns true on success.
+  async function createPrViaApi(user) {
+    const forkRepo = `${user}/${repoName}`;
+    setBusy(true, "Checking your fork…");
+    // 1) Ensure the fork exists (create it if not).
+    let fork;
+    try {
+      fork = await GH.getRepo(forkRepo);
+      const ok = fork && fork.fork && ((fork.parent && fork.parent.full_name.toLowerCase() === REPO.toLowerCase()) || (fork.source && fork.source.full_name.toLowerCase() === REPO.toLowerCase()));
+      if (fork && !ok) { setBusy(false); banner("err", `<code>${esc(forkRepo)}</code> exists but isn't a fork of <code>${esc(REPO)}</code>.`); return true; }
+    } catch (e) {
+      if (e.status === 404) {
+        setBusy(true, "Creating your fork…");
+        await GH.createFork(REPO);
+        // Forking is async on GitHub's side; poll briefly until it's ready.
+        for (let i = 0; i < 10; i++) {
+          await new Promise(r => setTimeout(r, 1500));
+          try { fork = await GH.getRepo(forkRepo); if (fork) break; } catch (e2) {}
+        }
+        if (!fork) { setBusy(false); banner("warn", "Fork is still being created — try again in a few seconds."); return true; }
+      } else { throw e; }
+    }
+
+    // 2) Base branch SHA on the fork, then create the new branch ref.
+    setBusy(true, "Creating branch…");
+    const baseRef = await GH.getBranch(forkRepo, BASE_BRANCH);
+    const baseSha = baseRef.object.sha;
+    try {
+      await GH.createRef(forkRepo, `refs/heads/${recBranch}`, baseSha);
+    } catch (e) {
+      if (e.status !== 422) throw e;   // 422 = ref already exists; reuse it
+    }
+
+    // 3) Splice the file and commit it on the new branch.
+    setBusy(true, "Committing change…");
+    const full = await splicedFileFor(forkRepo);
+    if (!full) { setBusy(false); banner("err", "Could not locate the AAIF_TAXONOMY array to edit."); return true; }
+    // Need the current file SHA on the new branch to update it.
+    let fileSha;
+    try { const cur = await GH.getContent(forkRepo, DATA_FILE, recBranch); fileSha = cur.sha; } catch (e) { if (e.status !== 404) throw e; }
+    await GH.putContent(forkRepo, DATA_FILE, {
+      message: `${subject}\n\n${description}`,
+      content: GH.b64(full),
+      branch: recBranch,
+      ...(fileSha ? { sha: fileSha } : {}),
+    });
+
+    // 4) Open the PR to upstream.
+    setBusy(true, "Opening pull request…");
+    let pr;
+    try {
+      pr = await GH.createPull(REPO, { title: subject, body, head: `${user}:${recBranch}`, base: BASE_BRANCH, maintainer_can_modify: true });
+    } catch (e) {
+      if (e.status === 422) {   // PR may already exist for this head
+        setBusy(false);
+        banner("warn", `Branch <code>${esc(recBranch)}</code> pushed to your fork, but GitHub reported a PR may already exist. Open it here: <a href="https://github.com/${REPO}/compare/${BASE_BRANCH}...${esc(user)}:${esc(recBranch)}?expand=1" target="_blank" rel="noopener">compare</a>.`);
+        return true;
+      }
+      throw e;
+    }
+    setBusy(false);
+    GH.persistTokenIfRequested();
+    window.open(pr.html_url, "_blank", "noopener");
+    banner("ok", `✓ Pull request opened: <a href="${esc(pr.html_url)}" target="_blank" rel="noopener">#${pr.number} — ${esc(subject)}</a> from <code>${esc(user)}:${esc(recBranch)}</code> to <code>${esc(REPO)}</code>.`);
+    return true;
+  }
+
+  function setBusy(on, label) {
+    ghBtn.disabled = !!on;
+    ghBtn.textContent = on ? "⏳ " + (label || "Working…") : "🔗 Create PR on GitHub";
+  }
+
+  ghBtn.onclick = async () => {
+    const user = document.getElementById("ghUser").value.trim().replace(/^@/, "");
+    const token = GH.getToken();
+
+    if (user && !/^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/.test(user)) {
+      banner("err", "That doesn't look like a valid GitHub username.");
+      return;
+    }
+
+    // --- Path 1: token present → full API flow -------------------------------
+    if (token) {
+      let effUser = user;
+      try {
+        if (!effUser) { const me = await GH.whoAmI(); effUser = me && me.login; }
+        if (!effUser) { banner("err", "Enter your GitHub username (couldn't read it from the token)."); return; }
+        await createPrViaApi(effUser);
+      } catch (e) {
+        setBusy(false);
+        const hint = e.status === 401 ? " Your token may be invalid or expired."
+                   : e.status === 403 ? " The token may lack the required scopes (Contents + Pull requests: write), or you hit a rate limit."
+                   : "";
+        banner("err", `GitHub API error: ${esc(e.message || "request failed")}.${hint}`);
+      }
+      return;
+    }
+
+    // --- Path 2: no token → prefilled URL / paste fallback -------------------
+    let branchCopied = false;
+    try { await navigator.clipboard.writeText(recBranch); branchCopied = true; } catch (e) {}
+    const branchNote = branchCopied
+      ? `The branch name <code>${esc(recBranch)}</code> is on your clipboard — paste it when GitHub asks to <b>Create a new branch</b>.`
+      : `Use the branch name <code>${esc(recBranch)}</code> when GitHub asks to <b>Create a new branch</b>.`;
+
+    if (user) {
+      const forkRepo = `${user}/${repoName}`;
+      const forkUrl = `https://github.com/${REPO}/fork`;
+      let forkExists = false;
+      try {
+        const r = await fetch(`https://api.github.com/repos/${forkRepo}`, { headers: { "Accept": "application/vnd.github+json" }, cache: "no-cache" });
+        if (r.ok) {
+          const info = await r.json();
+          const parent = info && info.parent && info.parent.full_name;
+          const source = info && info.source && info.source.full_name;
+          forkExists = !!info.fork && ((parent && parent.toLowerCase() === REPO.toLowerCase()) || (source && source.toLowerCase() === REPO.toLowerCase()));
+          if (info && !info.fork) forkExists = false;
+        }
+      } catch (e) {}
+      if (!forkExists) {
+        window.open(forkUrl, "_blank", "noopener");
+        banner("warn", `You don't appear to have a fork yet (and no token was given to create one). Opened the <b>fork page</b> for <code>${esc(REPO)}</code> — click <b>Create fork</b>, then press the button again.`);
+        return;
+      }
+      const full = await splicedFileFor(forkRepo);
+      const prefill = buildPrefillUrl(forkRepo, full);
+      if (prefill) {
+        window.open(prefill, "_blank", "noopener");
+        banner("ok", `Opened a <b>prefilled commit</b> on your fork <code>${esc(forkRepo)}</code>: file, commit title and description are filled in. ${branchNote} Then <b>Propose changes</b> to open the PR. <i>Tip: add a token above to do all of this in one click.</i>`);
+      } else {
+        await pasteFallback(forkRepo, "the file is too large to prefill via URL");
+      }
+    } else {
+      const full = await splicedFileFor(REPO);
+      const prefill = buildPrefillUrl(REPO, full);
+      if (prefill) {
+        window.open(prefill, "_blank", "noopener");
+        banner("ok", `Opened a <b>prefilled commit</b> (file, commit title and description filled in). GitHub will offer to <b>fork ${esc(REPO)}</b> on commit. ${branchNote} <i>Tip: add your username and a token above to do this in one click.</i>`);
+      } else {
+        await pasteFallback(REPO, "the file is too large to prefill via URL");
+      }
+    }
+  };
 
   const dl = document.getElementById("downloadBtn");
   dl.onclick = () => {
@@ -697,7 +1039,7 @@ function generate() {
     a.remove(); URL.revokeObjectURL(url);
   };
 
-  banner("ok", `Script generated for "${esc(p.term)}". Download it and run <code>bash create-pr.sh</code> from the repo root.`);
+  banner("ok", `Ready for "${esc(p.term)}". Create the PR directly on GitHub, or download <code>create-pr.sh</code> and run it locally.`);
   document.getElementById("resultCard").scrollIntoView({ behavior: "smooth" });
 }
 
@@ -755,18 +1097,37 @@ const AI = (function () {
   // null => the current definition did not originate from AI (manual/existing).
   let aiDraftDefinition = null;
 
-  const PROMPT = (term) => `You are a careful terminology editor for the AAIF (Agentic AI Foundation) taxonomy.
+  const PROMPT = (term) => {
+    // Constrain the model: related/contrasting terms MUST be existing taxonomy
+    // terms, and working groups MUST be from the fixed list. We pass both lists
+    // so the model picks from them instead of inventing values (which we'd only
+    // discard during validation anyway).
+    const existing = STATE.terms
+      .map(t => t.term)
+      .filter(t => t.toLowerCase() !== term.toLowerCase());
+    const termList = existing.length ? existing.join(", ") : "(none available)";
+    const wgList = WORKGROUPS.join(", ");
+    return `You are a careful terminology editor for the AAIF (Agentic AI Foundation) taxonomy.
 Given a single term, produce a vendor-neutral, standards-style entry.
 
 Term: ${JSON.stringify(term)}
+
+Existing taxonomy terms you may reference (choose ONLY from these, verbatim):
+${termList}
+
+Working groups you may choose from (choose ONLY from these, verbatim):
+${wgList}
 
 Rules:
 - "definition": exactly ONE sentence, concise and vendor-neutral. No trailing examples.
 - "scopeNote": optional clarifying context, examples or boundaries (may be empty string).
 - "aliases": array of common synonyms or alternate spellings (may be empty).
-- Do NOT invent related or contrasting terms.
+- "relatedTerms": array of 0–4 CLOSELY related terms, each copied VERBATIM from the existing-terms list above. Never invent a term that isn't in that list. Empty array if none fit.
+- "contrastsWith": array of 0–3 terms that meaningfully CONTRAST with this one, each copied VERBATIM from the existing-terms list above. Never invent one. Empty array if none fit.
+- "workgroups": array of 0–3 working groups from the list above that would care about this term, copied VERBATIM. Empty array if unsure. Do NOT use "Universal".
 
-Return ONLY a JSON object with keys: definition, scopeNote, aliases. No markdown, no commentary.`;
+Return ONLY a JSON object with keys: definition, scopeNote, aliases, relatedTerms, contrastsWith, workgroups. No markdown, no commentary.`;
+  };
 
   function setStatus(cls, text) {
     const el = document.getElementById("aiStatus");
@@ -821,12 +1182,40 @@ Return ONLY a JSON object with keys: definition, scopeNote, aliases. No markdown
       const aliases = Array.isArray(obj.aliases) ? obj.aliases : [];
       fillTags("aliases", aliases.map(a => String(a).trim()).filter(Boolean));
 
+      // Related terms + contrasts must be EXISTING taxonomy terms. Fill them
+      // through the validating tag box (case-insensitive match, canonical
+      // casing), dropping anything the model invented. Track what we skipped.
+      const skipped = [];
+      const applyValidated = (name, values) => {
+        const box = document.querySelector(`.tagbox[data-tags="${name}"]`);
+        box.querySelector(".tags").innerHTML = "";
+        (Array.isArray(values) ? values : []).forEach(v => {
+          const val = String(v).trim();
+          if (!val) return;
+          const match = STATE.byName[val.toLowerCase()];
+          if (match && match.term.toLowerCase() !== term.toLowerCase()) addTag(box, match.term, false);
+          else skipped.push(val);
+        });
+      };
+      applyValidated("relatedTerms", obj.relatedTerms);
+      applyValidated("contrastsWith", obj.contrastsWith);
+
+      // Working groups: check only boxes whose value matches an allowed group.
+      const wgWanted = new Set((Array.isArray(obj.workgroups) ? obj.workgroups : [])
+        .map(w => String(w).trim().toLowerCase()));
+      document.querySelectorAll("#wgList input").forEach(cb => {
+        if (wgWanted.has(cb.value.toLowerCase())) cb.checked = true;
+      });
+
       // Record the AI baseline so we can report the vibed/manual ratio later.
       aiDraftDefinition = def;
 
       checkSentences();
       updateTermBadge();
-      banner("ok", `Grok drafted a definition for "${esc(term)}". <b>Review and edit</b> before generating the PR.`);
+      const extra = skipped.length
+        ? ` (skipped ${skipped.length} suggested term${skipped.length > 1 ? "s" : ""} not in the taxonomy: ${skipped.map(esc).join(", ")})`
+        : "";
+      banner("ok", `Grok drafted an entry for "${esc(term)}" — definition, scope, aliases, related terms, contrasts and working groups.${extra} <b>Review and edit</b> before generating the PR.`);
     } catch (e) {
       banner("err", "AI draft failed" + (e && e.message ? ` (${esc(e.message)})` : "") + ". Try again or fill the fields manually.");
     } finally {
