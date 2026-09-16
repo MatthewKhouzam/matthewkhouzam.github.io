@@ -55,6 +55,8 @@
   .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); margin-left: 8px; }
   .badge.pending { background: rgba(255,207,107,.15); color: var(--warn); }
   .badge.defined { background: rgba(123,216,143,.15); color: var(--accent-2); }
+  .badge.submitted { background: rgba(120,170,255,.18); color: #78aaff; text-decoration: none; cursor: pointer; }
+  .badge.submitted:hover { text-decoration: underline; }
   /* browser cards */
   .term { border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 12px; background: #131a28; }
   .term h2 { margin: 0 0 4px; font-size: 17px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -112,6 +114,7 @@
           <option value="all">All terms</option>
           <option value="defined">Defined only</option>
           <option value="pending">Pending only</option>
+          <option value="submitted">Submitted (open PR)</option>
         </select>
         <select id="wgFilter"><option value="">All working groups</option></select>
         <span class="count" id="count"></span>
@@ -345,6 +348,13 @@ function init(data) {
 
   // Pre-fill a remembered GitHub token (if the user opted to store one).
   GH.loadRememberedToken();
+
+  // Fetch open/closed PRs in the background so terms can show a "submitted"
+  // badge (an open PR proposes the term). Non-fatal if it fails (e.g. rate
+  // limited without a token) — the browser still works from the data file.
+  PRS.load().then(r => {
+    if (r && r.ok) render();          // re-render list now that PR data is in
+  }).catch(() => {});
 }
 
 // ---------- tabs ----------
@@ -363,6 +373,7 @@ function renderList(query, filterMode, wg) {
     const pending = isPending(t);
     if (filterMode === "defined" && pending) return false;
     if (filterMode === "pending" && !pending) return false;
+    if (filterMode === "submitted" && !(PRS.isLoaded() && PRS.openFor(t.term).length)) return false;
     if (wg && !(t.workgroups || []).includes(wg)) return false;
     if (!q) return true;
     const hay = [t.term, t.definition, t.scopeNote, ...(t.aliases||[]), ...(t.relatedTerms||[]), ...(t.contrastsWith||[])].filter(Boolean).join(" ").toLowerCase();
@@ -376,8 +387,13 @@ function renderList(query, filterMode, wg) {
 function chips(values) { return (values || []).map(v => `<span class="chip">${esc(v)}</span>`).join(" "); }
 function renderTerm(t) {
   const pending = isPending(t);
+  const openPrs = PRS.isLoaded() ? PRS.openFor(t.term) : [];
   const el = document.createElement("div"); el.className = "term";
   let html = `<h2>${esc(t.term)}<span class="badge ${pending?"pending":"defined"}">${pending?"pending":"defined"}</span>`;
+  if (openPrs.length) {
+    const pr = openPrs[0];
+    html += `<a class="badge submitted" href="${esc(pr.url)}" target="_blank" rel="noopener" title="${esc(pr.title)}">submitted&nbsp;#${pr.number}</a>`;
+  }
   if (t.category) html += `<span class="badge">${esc(t.category)}</span>`;
   html += `</h2>`;
   html += `<div class="def ${pending?"pending":""}">${esc(t.definition || "Definition pending.")}</div>`;
@@ -647,8 +663,107 @@ const GH = (function () {
   const putContent  = (ownerRepo, path, payload) => api("PUT", `/repos/${ownerRepo}/contents/${path}`, payload);
   const createPull  = (upstream, payload) => api("POST", `/repos/${upstream}/pulls`, payload);
 
+  // List pull requests for a repo. `state` is "open" | "closed" | "all".
+  // Paginates through all pages (100 per page). Works unauthenticated on a
+  // public repo, but a token raises the rate limit.
+  async function listPulls(ownerRepo, state = "all") {
+    const out = [];
+    for (let page = 1; page <= 10; page++) {  // cap at 1000 PRs
+      const batch = await api("GET",
+        `/repos/${ownerRepo}/pulls?state=${encodeURIComponent(state)}&per_page=100&page=${page}`);
+      if (!Array.isArray(batch) || !batch.length) break;
+      out.push(...batch);
+      if (batch.length < 100) break;
+    }
+    return out;
+  }
+
   return { getToken, persistTokenIfRequested, loadRememberedToken, api, b64,
-           whoAmI, getRepo, createFork, getBranch, createRef, getContent, putContent, createPull };
+           whoAmI, getRepo, createFork, getBranch, createRef, getContent, putContent,
+           createPull, listPulls };
+})();
+
+// ---------- pull-request status ----------
+// Fetches PRs against the upstream repo and maps each to a taxonomy term, so
+// the browser can show three states per term:
+//   present   — defined in the loaded data file
+//   pending   — in the data file but without a definition yet
+//   submitted — an OPEN pull request proposes/defines it (not yet merged)
+// A term's PR is identified by the branch name convention used when creating
+// PRs from this tool ("taxonomy/define-<slug>"), falling back to the PR title.
+const PRS = (function () {
+  // slug -> { state, prs: [{number, title, url, state, merged}] }
+  let byTermSlug = {};
+  let loaded = false;
+  let all = [];
+
+  // Extract the term slug a PR refers to, from its head branch or title.
+  function slugForPull(pr) {
+    const ref = pr && pr.head && pr.head.ref ? pr.head.ref : "";
+    const m = /taxonomy\/define-([a-z0-9-]+)/i.exec(ref);
+    if (m) return m[1];
+    // Fallback: derive from the title, e.g. "Define: Delegation" / "Add term Foo".
+    const title = (pr && pr.title) || "";
+    const t = title.replace(/^\s*(define|add|update)\b[:\-\s]*/i, "")
+                   .replace(/\bterm\b/i, "").trim();
+    return t ? slug(t) : "";
+  }
+
+  async function load() {
+    let pulls;
+    try {
+      pulls = await GH.listPulls(REPO, "all");
+    } catch (e) {
+      loaded = false;
+      return { ok: false, error: (e && e.message) || String(e) };
+    }
+    all = pulls;
+    byTermSlug = {};
+    pulls.forEach(pr => {
+      const s = slugForPull(pr);
+      if (!s) return;
+      const entry = {
+        number: pr.number,
+        title: pr.title,
+        url: pr.html_url,
+        state: pr.state,              // "open" | "closed"
+        merged: !!pr.merged_at,       // closed + merged_at => merged
+      };
+      (byTermSlug[s] = byTermSlug[s] || []).push(entry);
+    });
+    loaded = true;
+    return { ok: true, count: pulls.length, mapped: Object.keys(byTermSlug).length };
+  }
+
+  // Return the open (unmerged) PRs for a term, if any.
+  function openFor(termOrSlug) {
+    // Always slugify: byTermSlug keys are produced by slug() (lowercase), and
+    // slug() is idempotent, so passing an already-slugged value is safe. The
+    // previous "looks like a slug already?" check used a case-insensitive
+    // regex, which wrongly treated capitalized single-word terms (e.g.
+    // "Harness", "Intent") as slugs and skipped lowercasing — so their lookup
+    // missed and the "submitted" badge never appeared.
+    const s = slug(termOrSlug);
+    return (byTermSlug[s] || []).filter(p => p.state === "open");
+  }
+  // Overall status label for a term, combining data-file state with PR state.
+  //   "present"   — defined in data
+  //   "pending"   — in data, no definition
+  //   "submitted" — has an open PR (regardless of data state)
+  function statusFor(term, isPendingInData, existsInData) {
+    if (openFor(term).length) return "submitted";
+    if (!existsInData) return "submitted-or-missing";
+    return isPendingInData ? "pending" : "present";
+  }
+
+  return {
+    load,
+    openFor,
+    statusFor,
+    isLoaded: () => loaded,
+    all: () => all,
+    byTermSlug: () => byTermSlug,
+  };
 })();
 
 function collectPayload() {
