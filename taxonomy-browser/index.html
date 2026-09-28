@@ -544,10 +544,11 @@ function slug(s) { return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").rep
 // Shared PR/commit metadata so the downloadable script and the in-browser
 // GitHub flow speak with one voice.
 function provenanceLine(attribution) {
-  const attr = attribution || { origin: "manual", aiPct: 0, editedPct: 100 };
-  if (attr.origin === "manual") return "Definition authorship: 100% human-written (no AI draft used).";
-  if (attr.origin === "ai") return "Definition authorship: 100% AI-drafted (Grok/xAI), 0% manually edited — unedited.";
-  return "Definition authorship: " + attr.aiPct + "% AI-drafted (Grok/xAI), " + attr.editedPct + "% manually edited.";
+  const attr = attribution || { origin: "manual", defPct: 0, scopePct: null, totalHumanPct: 100 };
+  if (attr.origin === "manual") return "Authorship: 100% human-written (no AI draft used).";
+  const scope = (attr.scopePct == null) ? "n/a" : (attr.scopePct + "% AI");
+  return "Authorship (AI-drafted vs. human): definition " + attr.defPct + "% AI, scope " +
+    scope + ", total " + attr.totalHumanPct + "% human across the patch.";
 }
 function commitSubject(p, exists) { return (exists ? "Update" : "Define") + " taxonomy term: " + p.term; }
 function prBody(p, exists, attribution) {
@@ -812,8 +813,9 @@ function buildScript(p, exists, attribution) {
   const subject = commitSubject(p, exists);
   const DELIM = "TAXONOMY_ENTRY_EOF";
 
-  // Attribution line: how much of the definition was AI-drafted ("vibed") vs
-  // human-authored/edited. Recorded in the commit body and PR for provenance.
+  // Attribution line: how much of the patch was AI-drafted ("vibed") vs
+  // human-authored/edited — per field (definition, scope) and total across the
+  // whole entry. Recorded in the commit body and PR for provenance.
   const commitBody = provenanceLine(attribution);
 
   // Python helper does the surgical, comment-preserving edit. It's embedded so
@@ -914,24 +916,24 @@ function generate() {
   const p = collectPayload();
   if (!p.term) { banner("err", "Term is required."); return; }
   const exists = !!STATE.byName[p.term.toLowerCase()];
-  const attribution = (typeof AI !== "undefined") ? AI.attribution(p.definition) : null;
+  const attribution = (typeof AI !== "undefined") ? AI.attribution(p) : null;
 
-  // Guard: a 100% AI-drafted, unedited definition must not ship unreviewed.
+  // Guard: a 100% AI-drafted, entirely unedited entry must not ship unreviewed.
   // Ask the human to confirm they have reviewed it before generating the PR.
   if (attribution && attribution.origin === "ai" && !generate._aiConfirmed) {
     const ok = window.confirm(
-      "This definition is 100% AI-drafted (Grok/xAI) and has not been edited.\n\n" +
+      "This entry is 100% AI-drafted (Grok/xAI) and has not been edited.\n\n" +
       "You are the author of record. Have you reviewed it and do you confirm it is " +
       "accurate and vendor-neutral?\n\nClick OK to confirm and generate the PR, or Cancel to edit it first."
     );
     if (!ok) {
-      banner("warn", "Review the AI-drafted definition and edit as needed, then generate again.");
+      banner("warn", "Review the AI-drafted entry and edit as needed, then generate again.");
       document.getElementById("definition").focus();
       return;
     }
     generate._aiConfirmed = true;
   } else if (!attribution || attribution.origin !== "ai") {
-    // Reset the confirmation latch once the definition is no longer a pure AI draft.
+    // Reset the confirmation latch once the entry is no longer a pure AI draft.
     generate._aiConfirmed = false;
   }
 
@@ -940,9 +942,12 @@ function generate() {
   const branch = "taxonomy/define-" + slug(p.term);
 
   let attrText = "";
-  if (attribution && attribution.origin === "ai") attrText = " • Definition: 100% AI-drafted (unedited)";
-  else if (attribution && attribution.origin === "ai-edited") attrText = ` • Definition: ${attribution.aiPct}% AI / ${attribution.editedPct}% edited`;
-  else attrText = " • Definition: 100% human-written";
+  if (attribution && (attribution.origin === "ai" || attribution.origin === "ai-edited")) {
+    const scope = (attribution.scopePct == null) ? "n/a" : `${attribution.scopePct}% AI`;
+    attrText = ` • Authorship: definition ${attribution.defPct}% AI / scope ${scope} / total ${attribution.totalHumanPct}% human`;
+  } else {
+    attrText = " • Authorship: 100% human-written";
+  }
 
   document.getElementById("resultCard").style.display = "block";
   document.getElementById("resultMeta").textContent =
@@ -1208,9 +1213,10 @@ const AI = (function () {
     sel.addEventListener("change", () => { selectedModel = sel.value; check(); });
   }
 
-  // The last AI-drafted definition, used to measure how much survived editing.
-  // null => the current definition did not originate from AI (manual/existing).
-  let aiDraftDefinition = null;
+  // The last AI-drafted entry (full payload snapshot), used to measure how much
+  // survived editing across the whole patch. null => the current form content
+  // did not originate from AI (manual entry or an existing term was loaded).
+  let aiDraft = null;
 
   const PROMPT = (term) => {
     // Constrain the model: related/contrasting terms MUST be existing taxonomy
@@ -1323,7 +1329,11 @@ Return ONLY a JSON object with keys: definition, scopeNote, aliases, relatedTerm
       });
 
       // Record the AI baseline so we can report the vibed/manual ratio later.
-      aiDraftDefinition = def;
+      // Snapshot every AI-populated field straight from the DOM (post-
+      // validation) so attribution() can measure edits across the WHOLE patch —
+      // definition, scope, tags and workgroup checkboxes — not just the
+      // definition. collectPayload() reflects exactly what the AI just applied.
+      aiDraft = collectPayload();
 
       checkSentences();
       updateTermBadge();
@@ -1357,26 +1367,82 @@ Return ONLY a JSON object with keys: definition, scopeNote, aliases, relatedTerm
     return prev[b.length];
   }
 
-  // Returns { origin, aiPct, editedPct } describing the final definition.
-  //   origin: "ai" | "ai-edited" | "manual"
-  //   aiPct:  % of the final definition preserved from the AI draft
-  function attribution(finalDef) {
-    finalDef = (finalDef || "").trim();
-    if (aiDraftDefinition == null || !aiDraftDefinition.trim()) {
-      return { origin: "manual", aiPct: 0, editedPct: 100 };
+  // Set (Jaccard) similarity for array/checkbox fields: how much of the union
+  // is shared. Case-insensitive. Empty-vs-empty counts as identical (100%).
+  function setSimilarityPct(draftArr, finalArr) {
+    const norm = a => new Set((Array.isArray(a) ? a : []).map(v => String(v).trim().toLowerCase()).filter(Boolean));
+    const d = norm(draftArr), f = norm(finalArr);
+    if (d.size === 0 && f.size === 0) return 100;
+    let inter = 0;
+    f.forEach(v => { if (d.has(v)) inter++; });
+    const union = new Set([...d, ...f]).size || 1;
+    return Math.round((inter / union) * 100);
+  }
+
+  // Character-level similarity for text fields via Levenshtein.
+  // Empty-vs-empty counts as identical (100%).
+  function textSimilarityPct(draft, final) {
+    draft = (draft || "").trim(); final = (final || "").trim();
+    if (!draft && !final) return 100;
+    if (draft === final) return 100;
+    const dist = levenshtein(draft, final);
+    const denom = Math.max(draft.length, final.length) || 1;
+    return Math.max(0, 100 - Math.round((dist / denom) * 100));
+  }
+
+  // Returns authorship attribution for the whole patch:
+  //   { origin, defPct, scopePct, totalHumanPct, aiPct, editedPct }
+  //   origin        : "ai" (pure unedited draft) | "ai-edited" | "manual"
+  //   defPct        : % of the final definition preserved from the AI draft
+  //   scopePct      : % of the final scope note preserved (null if no scope)
+  //   totalHumanPct : human-authored share across the entire patch (0..100)
+  //   aiPct/editedPct: kept for the definition, for backward compatibility
+  // `final` is the full payload from collectPayload().
+  function attribution(final) {
+    // No AI draft on record → everything is human-authored.
+    if (aiDraft == null) {
+      return { origin: "manual", defPct: 0, scopePct: null, totalHumanPct: 100, aiPct: 0, editedPct: 100 };
     }
-    if (!finalDef) return { origin: "manual", aiPct: 0, editedPct: 100 };
-    const draft = aiDraftDefinition.trim();
-    if (finalDef === draft) return { origin: "ai", aiPct: 100, editedPct: 0 };
-    const dist = levenshtein(draft, finalDef);
-    const denom = Math.max(draft.length, finalDef.length) || 1;
-    const editedPct = Math.min(100, Math.round((dist / denom) * 100));
-    const aiPct = Math.max(0, 100 - editedPct);
-    return { origin: "ai-edited", aiPct, editedPct };
+    final = final || {};
+
+    // Fields we track, with a weight = size of the FINAL content so a one-word
+    // alias edit doesn't count the same as a rewritten definition. Text fields
+    // weigh by character count; set fields by item count (min 1 when non-empty
+    // so a checkbox toggle still registers).
+    const textLen = s => (s || "").trim().length;
+    const setLen = a => { const n = (Array.isArray(a) ? a : []).filter(v => String(v).trim()).length; return n ? n : 0; };
+
+    const fields = [
+      { kind: "text", draft: aiDraft.definition,   final: final.definition,   weight: textLen(final.definition) },
+      { kind: "text", draft: aiDraft.scopeNote,     final: final.scopeNote,     weight: textLen(final.scopeNote) },
+      { kind: "set",  draft: aiDraft.aliases,        final: final.aliases,        weight: setLen(final.aliases) },
+      { kind: "set",  draft: aiDraft.relatedTerms,   final: final.relatedTerms,   weight: setLen(final.relatedTerms) },
+      { kind: "set",  draft: aiDraft.contrastsWith,  final: final.contrastsWith,  weight: setLen(final.contrastsWith) },
+      { kind: "set",  draft: aiDraft.workgroups,     final: final.workgroups,     weight: setLen(final.workgroups) },
+    ];
+
+    let aiKept = 0, totalWeight = 0;
+    fields.forEach(f => {
+      const sim = f.kind === "text" ? textSimilarityPct(f.draft, f.final) : setSimilarityPct(f.draft, f.final);
+      aiKept += f.weight * (sim / 100);
+      totalWeight += f.weight;
+    });
+
+    const defPct = textSimilarityPct(aiDraft.definition, final.definition);
+    const scopePct = textLen(final.scopeNote) === 0 && textLen(aiDraft.scopeNote) === 0
+      ? null
+      : textSimilarityPct(aiDraft.scopeNote, final.scopeNote);
+
+    const totalAiPct = totalWeight ? Math.round((aiKept / totalWeight) * 100) : 100;
+    const totalHumanPct = Math.max(0, Math.min(100, 100 - totalAiPct));
+
+    // Origin: pure unedited AI draft only if literally nothing changed anywhere.
+    const origin = totalHumanPct === 0 ? "ai" : "ai-edited";
+    return { origin, defPct, scopePct, totalHumanPct, aiPct: defPct, editedPct: Math.max(0, 100 - defPct) };
   }
 
   // Called by prefill(): loading an existing term is NOT AI-authored content.
-  function resetBaseline() { aiDraftDefinition = null; }
+  function resetBaseline() { aiDraft = null; }
 
   async function init() {
     const btn = document.getElementById("aiFillBtn");
