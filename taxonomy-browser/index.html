@@ -439,13 +439,28 @@ function wireTagboxes() {
   });
 }
 function currentTags(box) { return [...box.querySelectorAll(".tags .chip-edit")].map(c => c.dataset.value); }
-function addTag(box, value, validate) {
+function addTag(box, value, validate, opts) {
   value = (value || "").trim(); if (!value) return;
   if (currentTags(box).some(v => v.toLowerCase() === value.toLowerCase())) return;
   if (validate) {
     const match = STATE.byName[value.toLowerCase()];
     if (!match) { banner("err", `"${esc(value)}" is not an existing taxonomy term.`); return; }
     value = match.term;
+  }
+  // Aliases must NOT collide with an existing term name: an alias that is also
+  // a real term creates an ambiguous reference (does "Traceability" mean the
+  // term, or just a synonym of this one?). Reject it on interactive adds.
+  // Programmatic prefill (opts.silent) skips the banner so loading a term with
+  // pre-existing data doesn't spray errors — but the invalid alias is still
+  // dropped so it can't be re-submitted.
+  if (box.dataset.tags === "aliases") {
+    const clash = STATE.byName[value.toLowerCase()];
+    if (clash) {
+      if (!(opts && opts.silent)) {
+        banner("err", `"${esc(clash.term)}" is already an existing taxonomy term, so it can't be used as an alias.`);
+      }
+      return;
+    }
   }
   const tags = box.querySelector(".tags");
   const chip = document.createElement("span");
@@ -530,7 +545,7 @@ function prefill(t) {
 function fillTags(name, values) {
   const box = document.querySelector(`.tagbox[data-tags="${name}"]`);
   box.querySelector(".tags").innerHTML = "";
-  values.forEach(v => addTag(box, v, false));
+  values.forEach(v => addTag(box, v, false, { silent: true }));
 }
 function checkSentences() {
   const txt = document.getElementById("definition").value.trim();
