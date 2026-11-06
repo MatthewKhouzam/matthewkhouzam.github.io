@@ -92,8 +92,8 @@
 <header>
   <h1>AAIF Taxonomy — Browser &amp; Term Wizard</h1>
   <p>Source of truth:
-    <a href="https://github.com/aaif/ws-taxonomy-landscape/blob/main/taxonomy/taxonomy-data.js" target="_blank" rel="noopener">taxonomy-data.js</a>
-    — loaded live via <code>&lt;script src&gt;</code> (no CORS). The wizard has no
+    <a href="https://github.com/aaif/ws-taxonomy-landscape/blob/main/taxonomy/taxonomy.json" target="_blank" rel="noopener">taxonomy.json</a>
+    — loaded live via <code>fetch()</code> (CORS-enabled raw URL). The wizard has no
     backend: it produces a script you download and run to open the PR.</p>
 </header>
 
@@ -211,7 +211,7 @@
 
       <div class="row" style="border-top:1px solid var(--border); padding-top:18px; margin-top:6px;">
         <label>Option B — Download a script and run it locally</label>
-        <div class="hint">Fully automated: branches, applies a comment-preserving surgical edit, signed-off commit, push, and PR via <code>gh</code>.</div>
+        <div class="hint">Fully automated: branches, applies a format-preserving surgical edit, signed-off commit, push, and PR via <code>gh</code>.</div>
         <button class="primary" id="downloadBtn">⬇ Download create-pr.sh</button>
       </div>
       <div class="row">
@@ -227,23 +227,19 @@
 </main>
 
 <!--
-  The data file assigns to window.AAIF_TAXONOMY. We CANNOT load it with a
-  classic <script src>: raw.githubusercontent.com serves it as
-  "Content-Type: text/plain" with "X-Content-Type-Options: nosniff", so modern
-  browsers refuse to execute it as a script (MIME mismatch under nosniff), and
-  neither onload nor onerror fires reliably.
-
-  Instead we fetch() the raw text (the response sends
-  "access-control-allow-origin: *", so CORS is fine) and evaluate the
-  assignment in a sandboxed scope. Use the RAW url, not github.com/.../blob/...
-  (which returns an HTML page). Pin to a commit SHA for a frozen snapshot.
+  The data file (taxonomy.json) is a plain JSON array. raw.githubusercontent.com
+  serves it as "Content-Type: text/plain" with "X-Content-Type-Options: nosniff",
+  but that doesn't matter: we fetch() the raw text (the response sends
+  "access-control-allow-origin: *", so CORS is fine) and JSON.parse() it
+  ourselves. Use the RAW url, not github.com/.../blob/... (which returns an HTML
+  page). Pin to a commit SHA for a frozen snapshot.
 -->
 <!-- Puter SDK: free, key-less access to Grok (xAI). No backend, no API key. -->
 <script src="https://js.puter.com/v2/"></script>
 <script>
-const DATA_URL = "https://raw.githubusercontent.com/aaif/ws-taxonomy-landscape/main/taxonomy/taxonomy-data.js";
+const DATA_URL = "https://raw.githubusercontent.com/aaif/ws-taxonomy-landscape/refs/heads/main/taxonomy/taxonomy.json";
 const REPO = "aaif/ws-taxonomy-landscape";
-const DATA_FILE = "taxonomy/taxonomy-data.js";
+const DATA_FILE = "taxonomy/taxonomy.json";
 const BASE_BRANCH = "main";
 const WORKGROUPS = ["Accuracy & Reliability", "Agentic Commerce", "Governance, Risk & Regulatory Alignment", "Identity & Trust", "Observability & Traceability", "Security & Privacy", "Workflows & Process Integration"];
 const PENDING_RE = /^definition pending/i;
@@ -259,9 +255,12 @@ function banner(kind, msg) {
 }
 function esc(s) { return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
-// Fetch the raw data file and evaluate the "window.AAIF_TAXONOMY = [...]"
-// assignment in a sandboxed scope. We can't use <script src> because GitHub
-// serves the file as text/plain with nosniff (browsers won't execute it).
+// Fetch the raw data file and parse it. The taxonomy is now a plain JSON
+// array (taxonomy.json). GitHub serves it as text/plain with nosniff, but we
+// fetch() the text and JSON.parse() it ourselves, so the Content-Type and the
+// script-execution rules don't matter. CORS is fine (the response sends
+// "access-control-allow-origin: *"). Use the RAW url, not github.com/.../blob/...
+// (which returns an HTML page). Pin to a commit SHA for a frozen snapshot.
 async function boot() {
   let text;
   try {
@@ -272,18 +271,12 @@ async function boot() {
     loadError("network", e && e.message); return;
   }
 
-  // Guard: /blob/ URLs (or a redirect) return HTML, not JS.
+  // Guard: /blob/ URLs (or a redirect) return HTML, not JSON.
   if (/^\s*</.test(text)) { loadError("html"); return; }
 
   let data;
   try {
-    // Evaluate against a local `window` object so the file's
-    // `window.AAIF_TAXONOMY = [...]` assignment is captured without touching
-    // the real global scope.
-    const sandbox = {};
-    // eslint-disable-next-line no-new-func
-    new Function("window", text)(sandbox);
-    data = sandbox.AAIF_TAXONOMY;
+    data = JSON.parse(text);
   } catch (e) {
     loadError("parse", e && e.message); return;
   }
@@ -300,13 +293,13 @@ function loadError(reason, detail) {
       extra = ` The server returned HTTP ${detail}. If it's 404, the file may have moved or the branch/path changed.`;
       break;
     case "html":
-      extra = " The response looks like HTML, not JS — use the <b>raw</b> URL (<code>raw.githubusercontent.com/.../main/...</code>), not the <code>github.com/.../blob/</code> page.";
+      extra = " The response looks like HTML, not JSON — use the <b>raw</b> URL (<code>raw.githubusercontent.com/.../main/...</code>), not the <code>github.com/.../blob/</code> page.";
       break;
     case "badContent":
-      extra = " The file loaded but did not define an <code>AAIF_TAXONOMY</code> array — its format may have changed.";
+      extra = " The file loaded but was not a JSON array of terms — its format may have changed.";
       break;
     case "parse":
-      extra = " The file could not be parsed as JavaScript" + (detail ? ` (${esc(detail)})` : "") + ".";
+      extra = " The file could not be parsed as JSON" + (detail ? ` (${esc(detail)})` : "") + ".";
       break;
     case "network":
     default:
@@ -316,7 +309,7 @@ function loadError(reason, detail) {
         extra += " If you opened this as a <code>file://</code>, serve the folder instead: <code>python3 -m http.server -d taxonomy-browser 8000</code>.";
       }
   }
-  banner("err", "Could not load the taxonomy data. Check the raw GitHub URL is reachable and still a valid <code>window.AAIF_TAXONOMY = [...]</code> file." + extra);
+  banner("err", "Could not load the taxonomy data. Check the raw GitHub URL is reachable and still a valid JSON array of terms." + extra);
 }
 
 function init(data) {
@@ -571,26 +564,34 @@ function prBody(p, exists, attribution) {
   return `Proposed via the Taxonomy Term Wizard (${action}). Touches only ${DATA_FILE}.\n\n${provenanceLine(attribution)}`;
 }
 
-// Splice the generated entry into the raw data file text, in the browser —
-// the same comment-preserving surgery the bash/Python script does, so we can
-// prefill GitHub's "new file" editor with the FULL resulting file. Returns the
-// new file text, or null if the array couldn't be located.
+// Splice the generated entry into the raw JSON file text, in the browser —
+// a comment/format-preserving surgical edit so we can prefill GitHub's "new
+// file" editor with the FULL resulting file. The file is a JSON array; we find
+// the outermost [ ... ] and replace an existing entry for this term or append.
+// Returns the new file text, or null if the array couldn't be located.
 function spliceEntry(rawText, term, entryText) {
   if (!rawText) return null;
-  const m = /window\.AAIF_TAXONOMY\s*=\s*\[/.exec(rawText);
-  if (!m) return null;
-  const start = m.index + m[0].length;
-  let depth = 1, i = start;
+  const start = rawText.indexOf("[");
+  if (start < 0) return null;
+  let depth = 1, i = start + 1, inStr = false, esc = false;
   while (i < rawText.length && depth) {
     const c = rawText[i];
-    if (c === "[") depth++;
-    else if (c === "]") depth--;
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+    } else {
+      if (c === '"') inStr = true;
+      else if (c === "[") depth++;
+      else if (c === "]") depth--;
+    }
     i++;
   }
   const end = i - 1; // index of the matching closing ]
-  const body = rawText.slice(start, end);
-  // Replace an existing entry for this exact term, else append.
-  const pat = new RegExp("\\{[^{}]*?term:\\s*'" + term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "'[^{}]*?\\}", "s");
+  const body = rawText.slice(start + 1, end);
+  // Replace an existing entry for this exact term, else append. Entries are
+  // JSON objects with a "term": "..." member.
+  const pat = new RegExp("\\{[^{}]*?\"term\":\\s*\"" + term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\"[^{}]*?\\}", "s");
   let newBody;
   const existing = pat.exec(body);
   if (existing) {
@@ -600,7 +601,7 @@ function spliceEntry(rawText, term, entryText) {
     const sep = trimmed.endsWith("}") ? ",\n" : "\n";
     newBody = trimmed + sep + entryText + "\n";
   }
-  return rawText.slice(0, start) + newBody + rawText.slice(end);
+  return rawText.slice(0, start + 1) + newBody + rawText.slice(end);
 }
 
 // ---------- GitHub REST API client (browser-side, user-supplied token) ----------
@@ -794,24 +795,25 @@ function collectPayload() {
   };
 }
 
-// Emit a JS entry object matching the file's formatting (2-space indent, single quotes).
+// Emit a JSON entry object matching the file's formatting (2-space indent,
+// double quotes, same key order as taxonomy.json). Values are JSON-encoded.
 function jsEntry(p) {
-  const q = s => "'" + String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+  const q = s => JSON.stringify(String(s));
   const arr = a => a.length ? "[" + a.map(q).join(", ") + "]" : "[]";
   const def = p.definition || PENDING_TEXT;
   const lines = [
     "  {",
-    "    term: " + q(p.term) + ",",
-    "    category: '',",
-    "    aliases: " + arr(p.aliases) + ",",
-    "    broaderTerm: null,",
-    "    definition: " + q(def) + ",",
+    "    \"term\": " + q(p.term) + ",",
+    "    \"category\": \"\",",
+    "    \"aliases\": " + arr(p.aliases) + ",",
+    "    \"broaderTerm\": null,",
+    "    \"definition\": " + q(def) + ",",
+    "    \"scopeNote\": " + q(p.scopeNote || "") + ",",
+    "    \"relatedTerms\": " + arr(p.relatedTerms) + ",",
+    "    \"contrastsWith\": " + arr(p.contrastsWith) + ",",
+    "    \"workgroups\": " + arr(p.workgroups),
+    "  }",
   ];
-  if (p.scopeNote) lines.push("    scopeNote: " + q(p.scopeNote) + ",");
-  lines.push("    relatedTerms: " + arr(p.relatedTerms) + ",");
-  lines.push("    contrastsWith: " + arr(p.contrastsWith) + ",");
-  lines.push("    workgroups: " + arr(p.workgroups));
-  lines.push("  }");
   return lines.join("\n");
 }
 
@@ -833,29 +835,35 @@ function buildScript(p, exists, attribution) {
   // whole entry. Recorded in the commit body and PR for provenance.
   const commitBody = provenanceLine(attribution);
 
-  // Python helper does the surgical, comment-preserving edit. It's embedded so
-  // the downloaded script is fully self-contained (no repo tooling required).
+  // Python helper does the surgical, format-preserving edit on the JSON array.
+  // It's embedded so the downloaded script is fully self-contained (no repo
+  // tooling required).
   const py = [
 `import io, os, re, sys, json`,
 `FILE = ${JSON.stringify(DATA_FILE)}`,
 `TERM = ${JSON.stringify(p.term)}`,
 `ENTRY = open("/tmp/taxonomy_entry.txt", encoding="utf-8").read().rstrip("\\n")`,
 `src = open(FILE, encoding="utf-8").read()`,
-`# Locate the array literal window.AAIF_TAXONOMY = [ ... ];`,
-`m = re.search(r"window\\.AAIF_TAXONOMY\\s*=\\s*\\[", src)`,
-`if not m:`,
-`    sys.exit("Could not find window.AAIF_TAXONOMY array in " + FILE)`,
-`start = m.end()`,
-`depth = 1; i = start`,
+`# Locate the outermost JSON array [ ... ].`,
+`start = src.find("[")`,
+`if start < 0:`,
+`    sys.exit("Could not find the JSON array in " + FILE)`,
+`depth = 1; i = start + 1; in_str = False; esc = False`,
 `while i < len(src) and depth:`,
 `    c = src[i]`,
-`    if c == '[': depth += 1`,
-`    elif c == ']': depth -= 1`,
+`    if in_str:`,
+`        if esc: esc = False`,
+`        elif c == '\\\\': esc = True`,
+`        elif c == '"': in_str = False`,
+`    else:`,
+`        if c == '"': in_str = True`,
+`        elif c == '[': depth += 1`,
+`        elif c == ']': depth -= 1`,
 `    i += 1`,
 `end = i - 1  # index of closing ]`,
-`body = src[start:end]`,
+`body = src[start+1:end]`,
 `# Does an entry with this exact term already exist?`,
-`pat = re.compile(r"\\{[^{}]*?term:\\s*'" + re.escape(TERM) + r"'[^{}]*?\\}", re.S)`,
+`pat = re.compile(r'\\{[^{}]*?"term":\\s*"' + re.escape(TERM) + r'"[^{}]*?\\}', re.S)`,
 `existing = pat.search(body)`,
 `if existing:`,
 `    new_body = body[:existing.start()] + ENTRY.strip() + body[existing.end():]`,
@@ -863,7 +871,9 @@ function buildScript(p, exists, attribution) {
 `    trimmed = body.rstrip()`,
 `    sep = ",\\n" if trimmed.endswith("}") else "\\n"`,
 `    new_body = trimmed + sep + ENTRY + "\\n"`,
-`out = src[:start] + new_body + src[end:]`,
+`out = src[:start+1] + new_body + src[end:]`,
+`# Validate the result is still well-formed JSON before writing.`,
+`json.loads(out)`,
 `open(FILE, "w", encoding="utf-8").write(out)`,
 `print("Patched", FILE)`,
   ].join("\n");
@@ -898,7 +908,7 @@ ${DELIM}
 git fetch origin "$BASE" --quiet || true
 git checkout -b "$BRANCH" "origin/$BASE" 2>/dev/null || git checkout -b "$BRANCH" "$BASE"
 
-# --- surgical edit (comment-preserving) --------------------------------------
+# --- surgical edit (format-preserving) ---------------------------------------
 python3 - <<'${DELIM}_PY'
 ${py}
 ${DELIM}_PY
@@ -1057,7 +1067,7 @@ function generate() {
     // 3) Splice the file and commit it on the new branch.
     setBusy(true, "Committing change…");
     const full = await splicedFileFor(forkRepo);
-    if (!full) { setBusy(false); banner("err", "Could not locate the AAIF_TAXONOMY array to edit."); return true; }
+    if (!full) { setBusy(false); banner("err", "Could not locate the taxonomy JSON array to edit."); return true; }
     // Need the current file SHA on the new branch to update it.
     let fileSha;
     try { const cur = await GH.getContent(forkRepo, DATA_FILE, recBranch); fileSha = cur.sha; } catch (e) { if (e.status !== 404) throw e; }
