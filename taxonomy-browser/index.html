@@ -552,11 +552,12 @@ function slug(s) { return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").rep
 // Shared PR/commit metadata so the downloadable script and the in-browser
 // GitHub flow speak with one voice.
 function provenanceLine(attribution) {
-  const attr = attribution || { origin: "manual", defPct: 0, scopePct: null, totalHumanPct: 100 };
+  const attr = attribution || { origin: "manual", defPct: 0, scopePct: null, totalHumanPct: 100, model: null };
   if (attr.origin === "manual") return "Authorship: 100% human-written (no AI draft used).";
   const scope = (attr.scopePct == null) ? "n/a" : (attr.scopePct + "% AI");
+  const model = attr.model ? " (model: " + attr.model + ")" : "";
   return "Authorship (AI-drafted vs. human): definition " + attr.defPct + "% AI, scope " +
-    scope + ", total " + attr.totalHumanPct + "% human across the patch.";
+    scope + ", total " + attr.totalHumanPct + "% human across the patch" + model + ".";
 }
 function commitSubject(p, exists) { return (exists ? "Update" : "Define") + " taxonomy term: " + p.term; }
 function prBody(p, exists, attribution) {
@@ -1242,6 +1243,9 @@ const AI = (function () {
   // survived editing across the whole patch. null => the current form content
   // did not originate from AI (manual entry or an existing term was loaded).
   let aiDraft = null;
+  // The model slug that produced the current aiDraft, recorded in the
+  // authorship/provenance line so reviewers know which model drafted the entry.
+  let aiDraftModel = null;
 
   const PROMPT = (term) => {
     // Constrain the model: related/contrasting terms MUST be existing taxonomy
@@ -1317,8 +1321,9 @@ Return ONLY a JSON object with keys: definition, scopeNote, aliases, relatedTerm
 
     const original = btn.textContent;
     btn.disabled = true; btn.textContent = "⏳ Drafting…";
+    const usedModel = currentModel();
     try {
-      const res = await puter.ai.chat(PROMPT(term), { model: currentModel() });
+      const res = await puter.ai.chat(PROMPT(term), { model: usedModel });
       const content = res && res.message ? res.message.content : res;
       const obj = parseJson(content);
 
@@ -1359,6 +1364,7 @@ Return ONLY a JSON object with keys: definition, scopeNote, aliases, relatedTerm
       // definition, scope, tags and workgroup checkboxes — not just the
       // definition. collectPayload() reflects exactly what the AI just applied.
       aiDraft = collectPayload();
+      aiDraftModel = usedModel;
 
       checkSentences();
       updateTermBadge();
@@ -1426,7 +1432,7 @@ Return ONLY a JSON object with keys: definition, scopeNote, aliases, relatedTerm
   function attribution(final) {
     // No AI draft on record → everything is human-authored.
     if (aiDraft == null) {
-      return { origin: "manual", defPct: 0, scopePct: null, totalHumanPct: 100, aiPct: 0, editedPct: 100 };
+      return { origin: "manual", defPct: 0, scopePct: null, totalHumanPct: 100, aiPct: 0, editedPct: 100, model: null };
     }
     final = final || {};
 
@@ -1463,11 +1469,11 @@ Return ONLY a JSON object with keys: definition, scopeNote, aliases, relatedTerm
 
     // Origin: pure unedited AI draft only if literally nothing changed anywhere.
     const origin = totalHumanPct === 0 ? "ai" : "ai-edited";
-    return { origin, defPct, scopePct, totalHumanPct, aiPct: defPct, editedPct: Math.max(0, 100 - defPct) };
+    return { origin, defPct, scopePct, totalHumanPct, aiPct: defPct, editedPct: Math.max(0, 100 - defPct), model: aiDraftModel };
   }
 
   // Called by prefill(): loading an existing term is NOT AI-authored content.
-  function resetBaseline() { aiDraft = null; }
+  function resetBaseline() { aiDraft = null; aiDraftModel = null; }
 
   async function init() {
     const btn = document.getElementById("aiFillBtn");
